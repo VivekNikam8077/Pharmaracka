@@ -91,6 +91,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
 
   const visibleUsers = realtimeStatuses;
 
+  const getDisplayName = (u: RealtimeStatus) => {
+    const fromUsers = users.find((x) => x.id === u.userId);
+    const name = (fromUsers?.name || u.userName || u.userId || '').trim();
+    if (name.includes('@')) return name.split('@')[0] || name;
+    return name;
+  };
+
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
       <div className="bg-white dark:bg-slate-800 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm overflow-visible">
@@ -119,9 +126,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
           <div className="divide-y divide-slate-100 dark:divide-slate-700">
             {visibleUsers
               .slice()
-              .sort((a, b) => a.userName.localeCompare(b.userName))
+              .sort((a, b) => getDisplayName(a).localeCompare(getDisplayName(b)))
               .map((u) => {
                 const config = getStatusConfig(u.status);
+                const displayName = getDisplayName(u);
                 const rawActivity = typeof u.activity === 'number' ? u.activity : 2;
                 const lastAt = typeof u.lastActivityAt === 'number'
                   ? u.lastActivityAt
@@ -137,12 +145,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
                   <div key={u.userId} className="px-6 py-4 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-4 min-w-0">
                       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-white ${config.bg || 'bg-slate-700'}`}>
-                        {u.userName?.charAt(0).toUpperCase() || 'U'}
+                        {displayName?.charAt(0).toUpperCase() || 'U'}
                       </div>
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className={`w-2.5 h-2.5 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-900`} title={activity === 1 ? 'Active' : activity === 0 ? 'Idle' : 'Offline'} />
-                          <p className="text-sm font-black text-slate-900 dark:text-white truncate">{u.userName || u.userId}</p>
+                          <p className="text-sm font-black text-slate-900 dark:text-white truncate">{displayName || u.userId}</p>
                         </div>
                       </div>
                     </div>
