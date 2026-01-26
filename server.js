@@ -1,3 +1,10 @@
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const express = require('express');
 const http = require('http');
@@ -17,10 +24,21 @@ const path = require('path');
 const app = express();
 app.use(cors());
 
+const DIST_PATH = path.join(__dirname, 'dist');
+if (fs.existsSync(DIST_PATH)) {
+  app.use(express.static(DIST_PATH));
+}
+
 // Health check endpoint
-app.get('/', (req, res) => {
+app.get('/api/health', (req, res) => {
   res.json({ status: 'online', message: 'Officely Core Server is running' });
 });
+
+if (fs.existsSync(DIST_PATH)) {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(DIST_PATH, 'index.html'));
+  });
+}
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -297,7 +315,7 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = 3001;
+const PORT = Number.parseInt(process.env.PORT || '3001', 10) || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
 =========================================
