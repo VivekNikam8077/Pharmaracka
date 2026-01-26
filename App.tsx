@@ -305,6 +305,10 @@ const App: React.FC = () => {
     const envServer = (import.meta as any)?.env?.VITE_BACKEND_URL as string | undefined;
     const localhostDefault = 'https://server2-e3p9.onrender.com';
 
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isHttps = window.location.protocol === 'https:';
+    const isRenderHost = /\.onrender\.com$/i.test(window.location.hostname);
+
     const serverUrl = savedServer
       ? (savedServer.startsWith('http://') || savedServer.startsWith('https://')
           ? savedServer
@@ -313,9 +317,11 @@ const App: React.FC = () => {
               : `https://${savedServer}`))
       : (envServer
           ? envServer
-          : ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+          : ((isHttps || isRenderHost)
               ? localhostDefault
-              : `http://${window.location.hostname}:3001`));
+              : (isLocalhost
+                  ? localhostDefault
+                  : `http://${window.location.hostname}:3001`)));
     
     console.log(`Connecting to Officely Backend: ${serverUrl}`);
     
