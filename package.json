@@ -1,0 +1,30 @@
+{
+  "name": "officely---premium-office-status-manager",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "db": "node db-server.cjs",
+    "server": "node realtime-server.cjs"
+  },
+  "dependencies": {
+    "@google/genai": "^1.35.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "lucide-react": "^0.562.0",
+    "mysql2": "^3.14.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

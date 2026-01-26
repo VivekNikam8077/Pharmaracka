@@ -1,0 +1,8 @@
+{
+  "name": "Officely - Premium Office Status Manager",
+  "description": "A high-end office productivity tool for tracking availability, managing status shifts, and receiving AI-powered daily summaries.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

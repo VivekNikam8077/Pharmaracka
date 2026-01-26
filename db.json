@@ -1,0 +1,1192 @@
+{
+  "users": [
+    {
+      "id": "su-atharva",
+      "name": "Atharva",
+      "email": "atharva.divate@pharmarack.com",
+      "password": "Bappa@123",
+      "role": "SuperUser",
+      "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=atharva",
+      "createdAt": "2026-01-10T10:06:19.540Z"
+    },
+    {
+      "id": "adm-vivek",
+      "name": "vivek",
+      "email": "vivek@office.com",
+      "password": "842194",
+      "role": "Admin",
+      "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=vivek",
+      "createdAt": "2026-01-10T10:06:19.541Z"
+    },
+    {
+      "id": "p4oymul8d",
+      "name": "sai",
+      "email": "sai@gmail.com",
+      "password": "123456",
+      "role": "Standard",
+      "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=sai",
+      "createdAt": "2026-01-10T10:08:16.646Z"
+    },
+    {
+      "id": "nvax8kj7i",
+      "name": "lavanya",
+      "email": "lavanya@gmail.com",
+      "password": "123456",
+      "role": "Standard",
+      "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=lavanya",
+      "createdAt": "2026-01-10T11:00:32.392Z"
+    }
+  ],
+  "presence": {
+    "su-atharva": {
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "role": "SuperUser",
+      "status": "Available",
+      "lastUpdate": "2026-01-10T12:42:56.965Z"
+    }
+  },
+  "history": [
+    {
+      "id": "9z70xmkdw",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:09:00.967Z"
+    },
+    {
+      "id": "8nyt0s4wg",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:09:00.970Z"
+    },
+    {
+      "id": "8py7d3tok",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:09:24.393Z"
+    },
+    {
+      "id": "1tpjnthl2",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:09:34.257Z"
+    },
+    {
+      "id": "6v480pzzv",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:09:48.712Z"
+    },
+    {
+      "id": "c4zk8nz6l",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:09:50.057Z"
+    },
+    {
+      "id": "f63xvgwz9",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T10:09:50.864Z"
+    },
+    {
+      "id": "5fq6pz3hb",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T10:09:51.528Z"
+    },
+    {
+      "id": "ge1pc15rs",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T10:09:52.025Z"
+    },
+    {
+      "id": "ji1xzbxsh",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:09:52.410Z"
+    },
+    {
+      "id": "uj65x4x7v",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:11:01.899Z"
+    },
+    {
+      "id": "vl69kv1r4",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:11:59.316Z"
+    },
+    {
+      "id": "s05m8z0mq",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:12:58.150Z"
+    },
+    {
+      "id": "h246qtx9f",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:13:01.110Z"
+    },
+    {
+      "id": "5345sabv5",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:13:01.686Z"
+    },
+    {
+      "id": "iwsq4297x",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:13:01.870Z"
+    },
+    {
+      "id": "n3vql88tg",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:13:36.510Z"
+    },
+    {
+      "id": "52cxrj2rp",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T10:13:46.198Z"
+    },
+    {
+      "id": "s79nwj435",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:13:58.151Z"
+    },
+    {
+      "id": "gl2lh6g9k",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:13:59.199Z"
+    },
+    {
+      "id": "1sohvtu6e",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:13:59.455Z"
+    },
+    {
+      "id": "w9jl6mm77",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:13:59.640Z"
+    },
+    {
+      "id": "v5hm5j068",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:13:59.799Z"
+    },
+    {
+      "id": "eogvjgufj",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:13:59.959Z"
+    },
+    {
+      "id": "ux4mz7gu7",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:14:00.135Z"
+    },
+    {
+      "id": "yd2apguai",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T10:14:03.663Z"
+    },
+    {
+      "id": "w6ayhh1a4",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T10:14:05.551Z"
+    },
+    {
+      "id": "1j6sw3xoa",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:14:09.799Z"
+    },
+    {
+      "id": "14d8l7sh8",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T10:14:13.967Z"
+    },
+    {
+      "id": "grwrnc6uu",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:14:15.639Z"
+    },
+    {
+      "id": "ch7w9na5v",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T10:14:17.783Z"
+    },
+    {
+      "id": "oedtuztmo",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:14:48.833Z"
+    },
+    {
+      "id": "4bf9kl0q2",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T10:16:06.728Z"
+    },
+    {
+      "id": "ssqm4q3jm",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T10:16:07.496Z"
+    },
+    {
+      "id": "hpi7spziv",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T10:17:19.578Z"
+    },
+    {
+      "id": "j75jxala7",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:17:26.034Z"
+    },
+    {
+      "id": "rkckdswqu",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:19:39.050Z"
+    },
+    {
+      "id": "8bxf3v1xh",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:28:49.686Z"
+    },
+    {
+      "id": "w2rfrpq20",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T10:29:12.107Z"
+    },
+    {
+      "id": "mv7fehdne",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T10:31:18.117Z"
+    },
+    {
+      "id": "cjv8xlakr",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T10:31:26.358Z"
+    },
+    {
+      "id": "voevsmxqo",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T10:31:30.618Z"
+    },
+    {
+      "id": "u50c9wupo",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:42:13.152Z"
+    },
+    {
+      "id": "x8zsg9ihu",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:55:40.629Z"
+    },
+    {
+      "id": "pciejyrdw",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T10:55:50.360Z"
+    },
+    {
+      "id": "oxk8694im",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T10:55:51.952Z"
+    },
+    {
+      "id": "6hnfrnmjt",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T11:01:36.567Z"
+    },
+    {
+      "id": "ym5w8gu96",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T11:01:36.570Z"
+    },
+    {
+      "id": "wjc4fbpeu",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T11:02:02.647Z"
+    },
+    {
+      "id": "gbfac1ey4",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T11:09:16.535Z"
+    },
+    {
+      "id": "xjd7qnnl3",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:11:25.961Z"
+    },
+    {
+      "id": "sq2hsnc6j",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:11:25.963Z"
+    },
+    {
+      "id": "msr8979ay",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:18:03.637Z"
+    },
+    {
+      "id": "pcgu45aj5",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:18:03.645Z"
+    },
+    {
+      "id": "7uux37umv",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:18:33.577Z"
+    },
+    {
+      "id": "yl6v0tfrf",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:18:34.329Z"
+    },
+    {
+      "id": "os9hqi8nu",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:18:34.689Z"
+    },
+    {
+      "id": "wu482hipp",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T12:18:35.049Z"
+    },
+    {
+      "id": "nw1mjg4v4",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T12:18:35.442Z"
+    },
+    {
+      "id": "6lgvsurox",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:18:35.809Z"
+    },
+    {
+      "id": "7w0fapf9w",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:18:36.265Z"
+    },
+    {
+      "id": "22ens5n1h",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:18:36.697Z"
+    },
+    {
+      "id": "coq7wbahx",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:18:37.084Z"
+    },
+    {
+      "id": "0kmc7d4n0",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T12:18:37.354Z"
+    },
+    {
+      "id": "7yphkhuig",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:19:11.160Z"
+    },
+    {
+      "id": "7zna2buv0",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:19:11.162Z"
+    },
+    {
+      "id": "ydd0vlbkp",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:19:55.756Z"
+    },
+    {
+      "id": "1jkikzjfx",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:19:55.758Z"
+    },
+    {
+      "id": "xtahyly8k",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:19:59.596Z"
+    },
+    {
+      "id": "0a9r09jip",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:19:59.973Z"
+    },
+    {
+      "id": "pfthqffco",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T12:20:00.332Z"
+    },
+    {
+      "id": "t762m8qlw",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:21:11.285Z"
+    },
+    {
+      "id": "aljy5z9mk",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:21:11.309Z"
+    },
+    {
+      "id": "soomrk7ef",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:23:54.179Z"
+    },
+    {
+      "id": "96stw4p7f",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:23:54.181Z"
+    },
+    {
+      "id": "efl42u0kl",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:24:18.149Z"
+    },
+    {
+      "id": "z62o8a4fh",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:24:18.153Z"
+    },
+    {
+      "id": "ryow6hj9z",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:27:16.221Z"
+    },
+    {
+      "id": "q0gdcg4ml",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:27:16.224Z"
+    },
+    {
+      "id": "r47mpevvs",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:28:00.649Z"
+    },
+    {
+      "id": "0i6724x47",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:28:04.785Z"
+    },
+    {
+      "id": "v02c0aejg",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:28:05.168Z"
+    },
+    {
+      "id": "3syuribbr",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T12:28:05.448Z"
+    },
+    {
+      "id": "1k1a9o7d3",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T12:28:06.088Z"
+    },
+    {
+      "id": "ogcrdy91p",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:28:15.200Z"
+    },
+    {
+      "id": "m1rubraxm",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:28:53.362Z"
+    },
+    {
+      "id": "0cmzwxcii",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:29:15.434Z"
+    },
+    {
+      "id": "ukff6lxxl",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:29:15.947Z"
+    },
+    {
+      "id": "6gphy6473",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T12:29:21.882Z"
+    },
+    {
+      "id": "hov818jkt",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T12:29:24.746Z"
+    },
+    {
+      "id": "fvr5z4c4q",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:29:29.691Z"
+    },
+    {
+      "id": "g1de26814",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:29:40.330Z"
+    },
+    {
+      "id": "9t2mjvyjf",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:29:42.546Z"
+    },
+    {
+      "id": "a95u442kw",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:30:03.251Z"
+    },
+    {
+      "id": "g8d3vortt",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T12:30:05.747Z"
+    },
+    {
+      "id": "zh5r0lnq3",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T12:30:08.691Z"
+    },
+    {
+      "id": "9saqith3w",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Quality Feedback",
+      "timestamp": "2026-01-10T12:30:10.980Z"
+    },
+    {
+      "id": "ko9pjxits",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:30:15.579Z"
+    },
+    {
+      "id": "bhdtk6lhi",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:30:17.572Z"
+    },
+    {
+      "id": "7hacmeli2",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T12:32:24.863Z"
+    },
+    {
+      "id": "sjing8qxt",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:32:27.254Z"
+    },
+    {
+      "id": "v0tlinpc2",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:08.049Z"
+    },
+    {
+      "id": "e3xecaqw3",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:08.052Z"
+    },
+    {
+      "id": "ghxq9uqdl",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:36.662Z"
+    },
+    {
+      "id": "5sme8j8qi",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:36.688Z"
+    },
+    {
+      "id": "5ydt9gzme",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:37.310Z"
+    },
+    {
+      "id": "wsrcqe9f0",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:37.333Z"
+    },
+    {
+      "id": "e1w605mt5",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:37.764Z"
+    },
+    {
+      "id": "lzxnm0h84",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:37.787Z"
+    },
+    {
+      "id": "7l3g5eg74",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:38.273Z"
+    },
+    {
+      "id": "0wuh5emdn",
+      "userId": "p4oymul8d",
+      "userName": "sai",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:38.274Z"
+    },
+    {
+      "id": "3qxwa2zzb",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:51.475Z"
+    },
+    {
+      "id": "n533otw57",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:36:51.478Z"
+    },
+    {
+      "id": "bfa05vqh3",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:04.635Z"
+    },
+    {
+      "id": "1xf19hhvp",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:04.657Z"
+    },
+    {
+      "id": "iwhr2eyby",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:05.246Z"
+    },
+    {
+      "id": "jejsw47l6",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:05.269Z"
+    },
+    {
+      "id": "ei7keszkr",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:05.782Z"
+    },
+    {
+      "id": "pzy6yzga0",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:06.110Z"
+    },
+    {
+      "id": "juf1cksdy",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:06.135Z"
+    },
+    {
+      "id": "bfvmqef2q",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:14.083Z"
+    },
+    {
+      "id": "dbxsn45xd",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:14.085Z"
+    },
+    {
+      "id": "97nw9hbvp",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:36.573Z"
+    },
+    {
+      "id": "jrz78exgi",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:36.593Z"
+    },
+    {
+      "id": "27re52sca",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:37.296Z"
+    },
+    {
+      "id": "oljov4oyu",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:37.320Z"
+    },
+    {
+      "id": "k36ojdr9e",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:37.916Z"
+    },
+    {
+      "id": "2kcntyknt",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:37.939Z"
+    },
+    {
+      "id": "3wwvokphk",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:38.468Z"
+    },
+    {
+      "id": "g6q5omkbm",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:38.490Z"
+    },
+    {
+      "id": "kwk8mzu8t",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:37:55.344Z"
+    },
+    {
+      "id": "22cc91d1n",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:37:58.551Z"
+    },
+    {
+      "id": "p3ts6jg4d",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:38:17.690Z"
+    },
+    {
+      "id": "mqhf0v8zo",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:38:17.692Z"
+    },
+    {
+      "id": "otfzasqq6",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:40:10.601Z"
+    },
+    {
+      "id": "b61aca242",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:40:10.621Z"
+    },
+    {
+      "id": "otngjdh1x",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:40:50.407Z"
+    },
+    {
+      "id": "mgy1c0gil",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:40:50.410Z"
+    },
+    {
+      "id": "7qllgfeg5",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:41:29.637Z"
+    },
+    {
+      "id": "dwo6lqv6z",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:41:29.642Z"
+    },
+    {
+      "id": "eyu5vtyws",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:41:29.655Z"
+    },
+    {
+      "id": "6y91fzxeu",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:41:29.658Z"
+    },
+    {
+      "id": "4qwai15af",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:42:54.889Z"
+    },
+    {
+      "id": "h22nowops",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:42:54.891Z"
+    },
+    {
+      "id": "sxmda89w1",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:42:54.909Z"
+    },
+    {
+      "id": "vjao5t00z",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:42:54.912Z"
+    },
+    {
+      "id": "6s09p1uhl",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:42:56.944Z"
+    },
+    {
+      "id": "hnvk0j164",
+      "userId": "su-atharva",
+      "userName": "Atharva",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:42:56.965Z"
+    },
+    {
+      "id": "o5ug23hy1",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Lunch",
+      "timestamp": "2026-01-10T12:44:14.547Z"
+    },
+    {
+      "id": "qgbyxn68b",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T12:44:19.674Z"
+    },
+    {
+      "id": "qw9e2dmdo",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Cross Utilization",
+      "timestamp": "2026-01-10T12:44:20.227Z"
+    },
+    {
+      "id": "ehui2s8kj",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T12:44:23.082Z"
+    },
+    {
+      "id": "tmt42crba",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:03:19.893Z"
+    },
+    {
+      "id": "16sykpnm1",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:03:19.897Z"
+    },
+    {
+      "id": "fgxbiq6ug",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:06:59.628Z"
+    },
+    {
+      "id": "c0w8ta6l8",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:06:59.631Z"
+    },
+    {
+      "id": "ay7qlo9w3",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:10:50.955Z"
+    },
+    {
+      "id": "8qzymoqos",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:10:50.959Z"
+    },
+    {
+      "id": "e5ui2r3vm",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Snacks",
+      "timestamp": "2026-01-10T13:12:30.512Z"
+    },
+    {
+      "id": "kiyy4t1t6",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Refreshment Break",
+      "timestamp": "2026-01-10T13:12:42.192Z"
+    },
+    {
+      "id": "9bfj93mib",
+      "userId": "nvax8kj7i",
+      "userName": "lavanya",
+      "status": "Available",
+      "timestamp": "2026-01-10T13:12:45.568Z"
+    }
+  ],
+  "settings": {
+    "siteName": "Pharmarack",
+    "logoUrl": "https://imgs.search.brave.com/EusAt3vy2UXhJsArGGQ_AKxea1n0-BkO9CLkuhPG-mk/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9wbGF5/LWxoLmdvb2dsZXVz/ZXJjb250ZW50LmNv/bS9NLVZnNHVWcHhJ/bXJsZ0hnN2pEM2xa/YU8zdk56dTc0Z2NR/MVNNN0dsSUY3V1VR/YllmLXVYMi1tb0Vo/VzR6TTFaaEYxUT13/MjU2",
+    "loginBgUrl": "https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&q=80",
+    "darkMode": false,
+    "availableStatuses": [
+      "Available",
+      "Lunch",
+      "Snacks",
+      "Refreshment Break",
+      "Feedback",
+      "Cross Utilization"
+    ]
+  }
+}
