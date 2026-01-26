@@ -517,6 +517,7 @@ const App: React.FC = () => {
     socketRef.current.on('force_logout', ({ message }) => {
       alert(message || 'You have been logged out.');
       localStorage.removeItem('officely_auth');
+      localStorage.removeItem('officely_user');
       localStorage.removeItem(LAST_VIEW_KEY);
       setUser(null);
       setView('dashboard');
@@ -527,34 +528,8 @@ const App: React.FC = () => {
     socketRef.current.on('auth_success', (authenticatedUser: User) => {
       setUser(authenticatedUser);
       setView('dashboard');
+      localStorage.setItem('officely_auth', JSON.stringify(authenticatedUser));
       localStorage.setItem('officely_user', JSON.stringify(authenticatedUser));
-      setView(authenticatedUser.role === UserRole.STANDARD ? 'dashboard' : 'monitor');
-
-      // Ensure this device has a stable sessionId for this user, used to prevent multiple logins.
-      try {
-        const emailKey = `officely_session_email_${String(authenticatedUser.email || '').toLowerCase().trim()}`;
-        const fromEmail = localStorage.getItem(emailKey);
-        const userKey = `officely_session_id_${authenticatedUser.id}`;
-        if (fromEmail && !localStorage.getItem(userKey)) localStorage.setItem(userKey, fromEmail);
-        if (!localStorage.getItem(userKey)) localStorage.setItem(userKey, createSessionId());
-      } catch (e) {}
-
-      let usersForArchive: User[] = [];
-      try {
-        usersForArchive = JSON.parse(localStorage.getItem('officely_users') || '[]');
-      } catch (e) {}
-
-      const existing = localStorage.getItem(ARCHIVE_STORAGE_KEY);
-      if (existing) {
-        try {
-          const parsed = JSON.parse(existing);
-          const { merged, changed } = ensureArchiveForUsers(parsed, usersForArchive);
-          if (changed) localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(merged));
-          setPerformanceHistory(merged);
-        } catch (e) {}
-      } else {
-        setPerformanceHistory([]);
-      }
     });
 
     socketRef.current.on('auth_failure', ({ message }) => {
@@ -623,6 +598,7 @@ const App: React.FC = () => {
       localStorage.removeItem(`officely_session_${user.id}`);
     }
     localStorage.removeItem('officely_auth');
+    localStorage.removeItem('officely_user');
     localStorage.removeItem(LAST_VIEW_KEY);
     setUser(null);
     setView('dashboard');
