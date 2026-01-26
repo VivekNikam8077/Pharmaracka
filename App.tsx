@@ -241,7 +241,16 @@ const App: React.FC = () => {
     if (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' || saved === 'management' || saved === 'settings') return saved;
     return 'dashboard';
   });
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<User[]>(() => {
+    const stored = localStorage.getItem('officely_users');
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  });
   const [performanceHistory, setPerformanceHistory] = useState<DaySummary[]>([]);
   const [hasSynced, setHasSynced] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -404,7 +413,9 @@ const App: React.FC = () => {
         if (storedAuth) {
           const parsed = JSON.parse(storedAuth);
           if (parsed?.id) {
-            const sessionId = getOrCreateSessionIdForUserId(parsed.id);
+            const sessionId = parsed?.email
+              ? getOrCreateSessionIdForEmail(parsed.email)
+              : getOrCreateSessionIdForUserId(parsed.id);
             socketRef.current?.emit('auth_resume', { userId: parsed.id, sessionId });
           }
         }
@@ -516,6 +527,14 @@ const App: React.FC = () => {
 
     socketRef.current.on('force_logout', ({ message }) => {
       alert(message || 'You have been logged out.');
+      try {
+        const storedAuth = localStorage.getItem('officely_auth');
+        if (storedAuth) {
+          const parsed = JSON.parse(storedAuth);
+          if (parsed?.id) localStorage.removeItem(`officely_session_id_${parsed.id}`);
+          if (parsed?.email) localStorage.removeItem(`officely_session_email_${String(parsed.email).toLowerCase().trim()}`);
+        }
+      } catch (e) {}
       localStorage.removeItem('officely_auth');
       localStorage.removeItem('officely_user');
       localStorage.removeItem(LAST_VIEW_KEY);
@@ -588,6 +607,23 @@ const App: React.FC = () => {
 
   const handleLogin = (credentials: any) => {
     if (!isConnected) return alert("System Offline: Cannot authorize at this time.");
+
+    // Prevent logging into a different account in the same browser profile without explicit logout.
+    try {
+      const storedAuth = localStorage.getItem('officely_auth');
+      const incomingEmail = String(credentials?.email || '').toLowerCase().trim();
+      if (storedAuth && incomingEmail) {
+        const parsed = JSON.parse(storedAuth);
+        const existingId = String(parsed?.id || '').toLowerCase().trim();
+        const existingEmail = String(parsed?.email || '').toLowerCase().trim();
+        const isDifferentUser = (existingId && existingId !== incomingEmail) && (existingEmail && existingEmail !== incomingEmail);
+        if (isDifferentUser) {
+          alert(`Already logged in as ${parsed?.name || parsed?.id}. Please logout first to switch accounts.`);
+          return;
+        }
+      }
+    } catch (e) {}
+
     const sessionId = getOrCreateSessionIdForEmail(credentials?.email);
     socket?.emit('auth_login', { ...credentials, sessionId });
   };
@@ -595,7 +631,8 @@ const App: React.FC = () => {
   const handleLogout = () => {
     if (user && socket) socket.emit('user_logout', user.id);
     if (user) {
-      localStorage.removeItem(`officely_session_${user.id}`);
+      localStorage.removeItem(`officely_session_id_${user.id}`);
+      if (user?.email) localStorage.removeItem(`officely_session_email_${String(user.email).toLowerCase().trim()}`);
     }
     localStorage.removeItem('officely_auth');
     localStorage.removeItem('officely_user');
