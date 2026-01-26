@@ -26,6 +26,7 @@ interface ManagementProps {
 const Management: React.FC<ManagementProps> = ({ currentUser, users, setUsers, setForceLogoutFlags, socket }) => {
   const [search, setSearch] = useState('');
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [sensitiveById, setSensitiveById] = useState<Record<string, { email: string; password: string }>>({});
   
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editPasswordValue, setEditPasswordValue] = useState('');
@@ -38,6 +39,34 @@ const Management: React.FC<ManagementProps> = ({ currentUser, users, setUsers, s
 
   const isSuper = currentUser.role === UserRole.SUPER_USER;
   const isAdmin = currentUser.role === UserRole.ADMIN;
+
+  useEffect(() => {
+    if (!socket) return;
+    if (!isSuper) return;
+
+    const onSensitiveUsers = (rows: any) => {
+      const list = Array.isArray(rows) ? rows : [];
+      setSensitiveById(() => {
+        const next: Record<string, { email: string; password: string }> = {};
+        for (const u of list) {
+          const id = String(u?.id || '').trim();
+          if (!id) continue;
+          next[id] = {
+            email: String(u?.email || ''),
+            password: String(u?.password || ''),
+          };
+        }
+        return next;
+      });
+    };
+
+    socket.on('users_sensitive_response', onSensitiveUsers);
+    socket.emit('users_sensitive_request');
+
+    return () => {
+      socket.off('users_sensitive_response', onSensitiveUsers);
+    };
+  }, [socket, isSuper]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -192,6 +221,9 @@ const Management: React.FC<ManagementProps> = ({ currentUser, users, setUsers, s
               <thead>
                 <tr className="bg-slate-50/50 dark:bg-slate-900/50">
                   <th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">User</th>
+                  {isSuper && (
+                    <th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Mail ID</th>
+                  )}
                   <th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Role</th>
                   <th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Passcode</th>
                   <th className="px-8 py-5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Actions</th>
@@ -208,6 +240,11 @@ const Management: React.FC<ManagementProps> = ({ currentUser, users, setUsers, s
                         <p className="text-sm font-black text-slate-800 dark:text-white">{u.name}</p>
                       </div>
                     </td>
+                    {isSuper && (
+                      <td className="px-8 py-6">
+                        <span className="text-xs font-black text-slate-500 dark:text-slate-300">{u.email}</span>
+                      </td>
+                    )}
                     <td className="px-8 py-6">
                       <span className={`px-3 py-1 text-[9px] font-black uppercase rounded-lg ${u.role === UserRole.SUPER_USER ? 'bg-indigo-600 text-white' : u.role === UserRole.ADMIN ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-500'}`}>
                         {u.role}
@@ -215,7 +252,11 @@ const Management: React.FC<ManagementProps> = ({ currentUser, users, setUsers, s
                     </td>
                     <td className="px-8 py-6">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-black tracking-widest">{isSuper && showPasswords[u.id] ? (u.password || '••••••') : '••••••'}</span>
+                        <span className="text-xs font-mono font-black tracking-widest">
+                          {isSuper && showPasswords[u.id]
+                            ? (sensitiveById[u.id]?.password || '••••••')
+                            : '••••••'}
+                        </span>
                         {isSuper && (
                           <button onClick={() => setShowPasswords(p => ({...p, [u.id]: !p[u.id]}))}><Eye className="w-3.5 h-3.5 text-slate-300" /></button>
                         )}
