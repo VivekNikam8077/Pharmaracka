@@ -331,6 +331,7 @@ const App: React.FC = () => {
   const serverOffsetRef = useRef(0);
   const activityPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isLoggingOutRef = useRef(false);
+  const isLoggedInRef = useRef(false); // FIX: Track login state
   const applyLogoutRef = useRef<(opts?: any) => void>(() => {});
 
   // ==================== LOGOUT HANDLER ====================
@@ -346,6 +347,8 @@ const App: React.FC = () => {
     }
 
     isLoggingOutRef.current = true;
+    isLoggedInRef.current = false; // FIX: Mark as logged out immediately
+
     const auth = opts?.auth || user;
     const broadcast = Boolean(opts?.broadcast);
     const skipEmit = Boolean(opts?.skipEmit);
@@ -358,32 +361,39 @@ const App: React.FC = () => {
     });
 
     try {
+      // FIX: Stop activity polling FIRST to prevent any more updates
+      if (activityPollRef.current) {
+        console.log('[logout] Stopping activity poll');
+        clearInterval(activityPollRef.current);
+        activityPollRef.current = null;
+      }
+
       const sock = socketRef.current;
       socketRef.current = null;
 
-      // 1. Emit logout event to server
+      // Emit logout event to server
       if (!skipEmit && auth?.id && sock?.connected) {
         console.log('[logout] Emitting user_logout to server');
         sock.emit('user_logout', auth.id);
       }
 
-      // 2. Disconnect socket
+      // Disconnect socket
       if (sock) {
         console.log('[logout] Disconnecting socket');
         sock.removeAllListeners();
         sock.disconnect();
       }
 
-      // 3. Clear all storage
+      // Clear all storage
       console.log('[logout] Clearing storage');
       utils.clearAllSessionData(auth);
 
-      // 4. FIX: Clear presence immediately - don't show logged out users
+      // Clear presence immediately
       console.log('[logout] Clearing presence state');
       setRealtimeStatuses([]);
       realtimeStatusesRef.current = [];
 
-      // 5. Reset all state
+      // Reset all state
       console.log('[logout] Resetting state');
       setSocket(null);
       setUser(null);
@@ -391,8 +401,9 @@ const App: React.FC = () => {
       setPerformanceHistory([]);
       setHasSynced(false);
       setLoginError('');
+      setIsConnected(false);
 
-      // 6. Broadcast to other tabs
+      // Broadcast to other tabs
       if (broadcast) {
         console.log('[logout] Broadcasting to other tabs');
         try {
@@ -424,6 +435,11 @@ const App: React.FC = () => {
   useEffect(() => {
     applyLogoutRef.current = applyLogout;
   }, [applyLogout]);
+
+  // FIX: Update login state when user changes
+  useEffect(() => {
+    isLoggedInRef.current = user !== null;
+  }, [user]);
 
   // ==================== STORAGE EVENT LISTENER (CROSS-TAB SYNC) ====================
   useEffect(() => {
@@ -510,12 +526,18 @@ const App: React.FC = () => {
     socketRef.current = newSocket;
     setSocket(newSocket);
 
-    // FIX: Clear stale UI presence on connection
+    // Clear stale UI presence on connection
     setRealtimeStatuses([]);
     realtimeStatusesRef.current = [];
 
     // ==================== ACTIVITY POLLING ====================
     const pollId = setInterval(async () => {
+      // FIX: Only poll if logged in
+      if (!isLoggedInRef.current) {
+        console.log('[activity] Skipping poll - not logged in');
+        return;
+      }
+
       try {
         const res = await fetch(`${serverUrl}/api/Office/status`);
         if (!res.ok) {
@@ -669,8 +691,7 @@ const App: React.FC = () => {
       setUsers(users);
       StorageManager.saveUsers(users);
 
-      // FIX: Only populate presence if it's non-empty from server
-      // Empty presence means server restarted and we should NOT show anyone as logged in
+      // Only populate presence if non-empty from server
       if (Array.isArray(presence) && presence.length > 0) {
         setRealtimeStatuses(presence);
         realtimeStatusesRef.current = presence;
@@ -774,7 +795,7 @@ const App: React.FC = () => {
         }
       } catch (e) {}
 
-      // FIX: Remove user from presence immediately
+      // Remove user from presence immediately
       setRealtimeStatuses(prev => {
         const next = prev.filter(s => s.userId !== userId);
         realtimeStatusesRef.current = next;
@@ -794,7 +815,7 @@ const App: React.FC = () => {
       console.log('[socket] Force logout received');
       const currentUser = StorageManager.getAuth();
 
-      // FIX: Clear presence immediately to prevent showing ghost users
+      // Clear presence immediately
       setRealtimeStatuses([]);
       realtimeStatusesRef.current = [];
       setHasSynced(false);
@@ -815,6 +836,7 @@ const App: React.FC = () => {
       }
 
       console.log('[socket] Auth success:', authenticatedUser.id);
+      isLoggedInRef.current = true; // FIX: Mark as logged in
       setLoginError('');
       setUser(authenticatedUser);
       setView('dashboard');
@@ -823,10 +845,11 @@ const App: React.FC = () => {
 
     newSocket.on('auth_failure', ({ message }) => {
       console.log('[socket] Auth failure:', message);
+      isLoggedInRef.current = false; // FIX: Mark as logged out
       setLoginError(message || 'Authentication failed.');
       setLoading(false);
 
-      // FIX: Clear stale presence on auth failure
+      // Clear stale presence on auth failure
       setRealtimeStatuses([]);
       realtimeStatusesRef.current = [];
       setHasSynced(false);
@@ -835,8 +858,12 @@ const App: React.FC = () => {
     // Cleanup
     return () => {
       console.log('[socket] Cleaning up connection');
-      clearInterval(pollId);
-      activityPollRef.current = null;
+      
+      // Stop activity polling
+      if (activityPollRef.current) {
+        clearInterval(activityPollRef.current);
+        activityPollRef.current = null;
+      }
 
       if (socketRef.current) {
         socketRef.current.removeAllListeners();
