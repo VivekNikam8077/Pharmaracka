@@ -94,19 +94,17 @@ const utils = {
   },
 
   getSessionKey: (identifier: string, isEmail: boolean): string => {
-    const prefix = isEmail 
-      ? STORAGE_KEYS.SESSION_EMAIL_PREFIX 
+    const prefix = isEmail
+      ? STORAGE_KEYS.SESSION_EMAIL_PREFIX
       : STORAGE_KEYS.SESSION_ID_PREFIX;
     return `${prefix}${String(identifier || '').toLowerCase().trim()}`;
   },
 
   clearAllSessionData: (user?: User | null) => {
-    // Clear auth and user data
     localStorage.removeItem(STORAGE_KEYS.AUTH);
     localStorage.removeItem(STORAGE_KEYS.USER);
     localStorage.removeItem(STORAGE_KEYS.LAST_VIEW);
 
-    // Clear session IDs
     if (user?.id) {
       const sessionIdKey = utils.getSessionKey(user.id, false);
       localStorage.removeItem(sessionIdKey);
@@ -120,20 +118,20 @@ const utils = {
 
 // ==================== ARCHIVE COMPUTATION ====================
 const computeArchiveFromHistory = (
-  historyRows: any[], 
-  presence: RealtimeStatus[], 
+  historyRows: any[],
+  presence: RealtimeStatus[],
   nowMs: number
 ): DaySummary[] => {
   const byUser = new Map<string, Array<{ status: string; ts: number }>>();
-  
+
   for (const row of Array.isArray(historyRows) ? historyRows : []) {
     const userId = String(row?.userId || '');
     const rawStatus = String(row?.status || '');
     const status = rawStatus === 'Feedback' ? OfficeStatus.QUALITY_FEEDBACK : rawStatus;
     const ts = new Date(row?.timestamp).getTime();
-    
+
     if (!userId || !status || !Number.isFinite(ts)) continue;
-    
+
     const arr = byUser.get(userId) || [];
     arr.push({ status, ts });
     byUser.set(userId, arr);
@@ -171,7 +169,7 @@ const computeArchiveFromHistory = (
 
   for (const [userId, events] of byUser.entries()) {
     const sorted = events.slice().sort((a, b) => a.ts - b.ts);
-    
+
     for (let i = 0; i < sorted.length; i++) {
       const cur = sorted[i];
       const next = sorted[i + 1];
@@ -195,7 +193,7 @@ const computeArchiveFromHistory = (
         const dayEnd = dayStart + 86400000;
         const chunkEnd = Math.min(endTs, dayEnd);
         const minutes = Math.max(0, Math.floor((chunkEnd - cursor) / 60000));
-        
+
         if (minutes > 0) {
           const key2 = `${userId}::${utils.toISTDateString(new Date(cursor))}`;
           const existing2 = summaries.get(key2);
@@ -223,8 +221,8 @@ const computeArchiveFromHistory = (
 
   const result: DaySummary[] = [];
   for (const s of summaries.values()) {
-    const totalMinutes = s.productiveMinutes + s.lunchMinutes + s.snacksMinutes + 
-                        s.refreshmentMinutes + s.feedbackMinutes + s.crossUtilMinutes;
+    const totalMinutes = s.productiveMinutes + s.lunchMinutes + s.snacksMinutes +
+      s.refreshmentMinutes + s.feedbackMinutes + s.crossUtilMinutes;
     result.push({
       userId: s.userId,
       date: s.date,
@@ -288,8 +286,8 @@ class StorageManager {
 
   static getLastView(): 'dashboard' | 'monitor' | 'analytics' | 'management' | 'settings' {
     const saved = localStorage.getItem(STORAGE_KEYS.LAST_VIEW);
-    if (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' || 
-        saved === 'management' || saved === 'settings') {
+    if (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' ||
+      saved === 'management' || saved === 'settings') {
       return saved;
     }
     return 'dashboard';
@@ -303,7 +301,7 @@ class StorageManager {
     const key = utils.getSessionKey(identifier, isEmail);
     const existing = localStorage.getItem(key);
     if (existing) return existing;
-    
+
     const newSessionId = utils.createSessionId();
     localStorage.setItem(key, newSessionId);
     return newSessionId;
@@ -327,22 +325,25 @@ const App: React.FC = () => {
   const [forceLogoutFlags, setForceLogoutFlags] = useState<Set<string>>(new Set());
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [socket, setSocket] = useState<Socket | null>(null);
+  // FIX: track login error to show inline instead of alert()
+  const [loginError, setLoginError] = useState<string>('');
 
   // ==================== REFS ====================
   const socketRef = useRef<Socket | null>(null);
   const realtimeStatusesRef = useRef<RealtimeStatus[]>([]);
   const serverOffsetRef = useRef(0);
-  const activityPollRef = useRef<NodeJS.Timeout | null>(null);
+  const activityPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isLoggingOutRef = useRef(false);
+  // FIX: keep applyLogout always fresh inside the socket useEffect (stale closure fix)
+  const applyLogoutRef = useRef<(opts?: any) => void>(() => {});
 
   // ==================== LOGOUT HANDLER ====================
-  const applyLogout = useCallback((opts?: { 
-    auth?: User | null; 
-    broadcast?: boolean; 
+  const applyLogout = useCallback((opts?: {
+    auth?: User | null;
+    broadcast?: boolean;
     reason?: string;
     skipEmit?: boolean;
   }) => {
-    // Prevent multiple simultaneous logout operations
     if (isLoggingOutRef.current) {
       console.log('[logout] Already logging out, skipping...');
       return;
@@ -353,26 +354,30 @@ const App: React.FC = () => {
     const broadcast = Boolean(opts?.broadcast);
     const skipEmit = Boolean(opts?.skipEmit);
 
-    console.log('[logout] Starting logout process', { 
-      userId: auth?.id, 
+    console.log('[logout] Starting logout process', {
+      userId: auth?.id,
       reason: opts?.reason,
       broadcast,
       skipEmit
     });
 
     try {
+      // FIX: Null the ref FIRST before removeAllListeners so no in-flight
+      // socket event (like auth_success) can fire after we start cleaning up
+      const sock = socketRef.current;
+      socketRef.current = null;
+
       // 1. Emit logout event to server (unless explicitly skipped)
-      if (!skipEmit && auth?.id && socketRef.current?.connected) {
+      if (!skipEmit && auth?.id && sock?.connected) {
         console.log('[logout] Emitting user_logout to server');
-        socketRef.current.emit('user_logout', auth.id);
+        sock.emit('user_logout', auth.id);
       }
 
       // 2. Disconnect socket completely
-      if (socketRef.current) {
+      if (sock) {
         console.log('[logout] Disconnecting socket');
-        socketRef.current.removeAllListeners();
-        socketRef.current.disconnect();
-        socketRef.current = null;
+        sock.removeAllListeners();
+        sock.disconnect();
       }
 
       // 3. Clear all storage
@@ -387,6 +392,7 @@ const App: React.FC = () => {
       setRealtimeStatuses([]);
       setPerformanceHistory([]);
       setHasSynced(false);
+      setLoginError('');
       realtimeStatusesRef.current = [];
 
       // 5. Broadcast to other tabs
@@ -399,7 +405,6 @@ const App: React.FC = () => {
             userId: auth?.id || null,
             email: auth?.email || null,
           }));
-          // Remove the broadcast flag after a short delay
           setTimeout(() => {
             localStorage.removeItem(STORAGE_KEYS.LOGOUT_BROADCAST);
           }, 1000);
@@ -412,69 +417,65 @@ const App: React.FC = () => {
     } catch (error) {
       console.error('[logout] Error during logout:', error);
     } finally {
-      // Reset the logout flag after a delay to prevent rapid re-logout
       setTimeout(() => {
         isLoggingOutRef.current = false;
       }, 500);
     }
   }, [user]);
 
+  // FIX: Keep the ref always pointing to the latest applyLogout
+  useEffect(() => {
+    applyLogoutRef.current = applyLogout;
+  }, [applyLogout]);
+
   // ==================== STORAGE EVENT LISTENER (CROSS-TAB SYNC) ====================
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      // Skip if currently logging out
       if (isLoggingOutRef.current) return;
 
-      // 1) If auth is removed in another tab
       if (e.key === STORAGE_KEYS.AUTH && e.newValue === null) {
         console.log('[storage] Auth removed in another tab');
         let oldAuth: User | null = null;
         try {
           if (e.oldValue) oldAuth = JSON.parse(e.oldValue);
         } catch (err) {}
-        applyLogout({ auth: oldAuth, broadcast: false, reason: 'auth_removed', skipEmit: true });
+        applyLogoutRef.current({ auth: oldAuth, broadcast: false, reason: 'auth_removed', skipEmit: true });
         return;
       }
 
-      // 2) Explicit logout broadcast from another tab
       if (e.key === STORAGE_KEYS.LOGOUT_BROADCAST && e.newValue) {
         console.log('[storage] Logout broadcast received');
         let payload: any = null;
         try {
           payload = JSON.parse(e.newValue);
         } catch (err) {}
-        
-        // Only logout if the broadcast is for current user or is a global logout
+
         if (!user || !payload?.userId || payload.userId === user.id) {
-          applyLogout({ auth: payload, broadcast: false, reason: 'logout_broadcast', skipEmit: true });
+          applyLogoutRef.current({ auth: payload, broadcast: false, reason: 'logout_broadcast', skipEmit: true });
         }
       }
 
-      // 3) Session ID changes (another tab took over)
       if (user?.id && e.key === utils.getSessionKey(user.id, false) && e.newValue !== e.oldValue) {
         console.log('[storage] Session ID changed, another tab took over');
-        applyLogout({ auth: user, broadcast: false, reason: 'session_takeover', skipEmit: true });
+        applyLogoutRef.current({ auth: user, broadcast: false, reason: 'session_takeover', skipEmit: true });
       }
     };
 
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [applyLogout, user]);
+  }, [user]);
 
   // ==================== SOCKET CONNECTION ====================
   useEffect(() => {
-    // If already have a socket, don't recreate
     if (socketRef.current) return;
 
     console.log('[socket] Initializing connection');
 
-    // Load archive
     const storedArchive = StorageManager.getArchive();
     if (storedArchive.length > 0) {
       setPerformanceHistory(storedArchive);
     }
 
-    // Determine server URL
     const savedServer = localStorage.getItem(STORAGE_KEYS.SERVER_IP);
     const isIpv4 = (v: string) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(v);
     const envServer = (import.meta as any)?.env?.VITE_BACKEND_URL as string | undefined;
@@ -486,22 +487,21 @@ const App: React.FC = () => {
 
     const serverUrl = savedServer
       ? (savedServer.startsWith('http://') || savedServer.startsWith('https://')
-          ? savedServer
-          : (isIpv4(savedServer)
-              ? `http://${savedServer}:3001`
-              : `https://${savedServer}`))
+        ? savedServer
+        : (isIpv4(savedServer)
+          ? `http://${savedServer}:3001`
+          : `https://${savedServer}`))
       : (envServer
-          ? envServer
-          : ((isHttps || isRenderHost)
-              ? localhostDefault
-              : (isLocalhost
-                  ? localhostDefault
-                  : `http://${window.location.hostname}:3001`)));
-    
+        ? envServer
+        : ((isHttps || isRenderHost)
+          ? localhostDefault
+          : (isLocalhost
+            ? localhostDefault
+            : `http://${window.location.hostname}:3001`)));
+
     console.log(`[socket] Connecting to: ${serverUrl}`);
-    
-    // Create socket connection
-    const newSocket = io(serverUrl, { 
+
+    const newSocket = io(serverUrl, {
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
@@ -514,7 +514,8 @@ const App: React.FC = () => {
     setSocket(newSocket);
 
     // ==================== ACTIVITY POLLING ====================
-    activityPollRef.current = setInterval(async () => {
+    // FIX: capture pollId locally to avoid Strict Mode double-invoke leak
+    const pollId = setInterval(async () => {
       try {
         const res = await fetch(`${serverUrl}/api/Office/status`);
         if (!res.ok) {
@@ -539,9 +540,9 @@ const App: React.FC = () => {
           for (const s of snapshot) {
             const userId = String(s?.user_id ?? '').trim();
             if (!userId) continue;
-            
+
             const existing = byId.get(userId);
-            if (!existing) continue; // Don't add users that aren't in presence
+            if (!existing) continue;
 
             const nextActivityRaw = Number(s?.status);
             const nextActivity = (nextActivityRaw === 0 || nextActivityRaw === 1 || nextActivityRaw === 2)
@@ -605,7 +606,7 @@ const App: React.FC = () => {
 
             const existingLast = typeof existing.lastActivityAt === 'number' ? existing.lastActivityAt : undefined;
             const shouldBump = typeof nextUpdatedAt === 'number' && (!existingLast || nextUpdatedAt > existingLast);
-            
+
             byId.set(userId, {
               ...existing,
               activity: nextActivity,
@@ -628,21 +629,22 @@ const App: React.FC = () => {
       }
     }, 2000);
 
+    activityPollRef.current = pollId;
+
     // ==================== SOCKET EVENT HANDLERS ====================
-    
+
     newSocket.on('connect', () => {
       console.log('[socket] Connected');
       setIsConnected(true);
       setLoading(false);
 
-      // Resume session if we have stored auth
       try {
         const storedAuth = StorageManager.getAuth();
         if (storedAuth?.id) {
           const sessionId = storedAuth?.email
             ? StorageManager.getOrCreateSessionId(storedAuth.email, true)
             : StorageManager.getOrCreateSessionId(storedAuth.id, false);
-          
+
           console.log('[socket] Resuming session for user:', storedAuth.id);
           newSocket.emit('auth_resume', { userId: storedAuth.id, sessionId });
         }
@@ -663,10 +665,10 @@ const App: React.FC = () => {
 
     newSocket.on('system_sync', ({ users, presence, history, settings: syncedSettings, serverTime }) => {
       console.log('[socket] System sync received');
-      
+
       setUsers(users);
       StorageManager.saveUsers(users);
-      
+
       setRealtimeStatuses(presence);
       realtimeStatusesRef.current = presence;
       setHasSynced(true);
@@ -699,8 +701,8 @@ const App: React.FC = () => {
     newSocket.on('history_update', (historyRows) => {
       try {
         const computed = computeArchiveFromHistory(
-          historyRows, 
-          realtimeStatusesRef.current, 
+          historyRows,
+          realtimeStatusesRef.current,
           Date.now() + serverOffsetRef.current
         );
         StorageManager.saveArchive(computed);
@@ -709,7 +711,7 @@ const App: React.FC = () => {
         console.error('[socket] Failed to update history:', e);
       }
     });
-    
+
     newSocket.on('presence_update', (data: RealtimeStatus) => {
       try {
         const st = (data as any)?.serverTime;
@@ -726,15 +728,15 @@ const App: React.FC = () => {
         const normalizedLastAt = (typeof incomingLastAt === 'number' && Number.isFinite(incomingLastAt))
           ? incomingLastAt
           : (existing?.lastActivityAt);
-        
+
         const normalized: RealtimeStatus = {
           ...(data as any),
-          ...(typeof normalizedLastAt === 'number' ? { 
-            lastActivityAt: normalizedLastAt, 
-            activityUpdatedAt: normalizedLastAt 
+          ...(typeof normalizedLastAt === 'number' ? {
+            lastActivityAt: normalizedLastAt,
+            activityUpdatedAt: normalizedLastAt
           } : {}),
         } as RealtimeStatus;
-        
+
         const filtered = prev.filter(s => s.userId !== data.userId);
         const next = [...filtered, normalized];
         realtimeStatusesRef.current = next;
@@ -745,7 +747,6 @@ const App: React.FC = () => {
     newSocket.on('user_offline', (userId: string) => {
       console.log('[socket] User offline:', userId);
 
-      // Close any open idle session for this user
       try {
         const nowMs = Date.now() + serverOffsetRef.current;
         const dayKey = utils.toISTDateString(new Date(nowMs));
@@ -755,7 +756,7 @@ const App: React.FC = () => {
         const row = dayBucket?.[userId];
         const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs)) ? row.idleStartMs : null;
         const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs)) ? row.idleTotalMs : 0;
-        
+
         if (typeof idleStartMs === 'number') {
           const delta = Math.max(0, nowMs - idleStartMs);
           dayBucket[userId] = { ...(row || {}), idleStartMs: null, idleTotalMs: idleTotalMs + delta };
@@ -780,14 +781,28 @@ const App: React.FC = () => {
 
     newSocket.on('force_logout', ({ message }) => {
       console.log('[socket] Force logout received');
-      alert(message || 'You have been logged out.');
-      
+      // FIX: use applyLogoutRef (always fresh) and read auth from storage (not stale closure)
       const currentUser = StorageManager.getAuth();
-      applyLogout({ auth: currentUser, broadcast: true, reason: 'force_logout' });
+      alert(message || 'You have been logged out.');
+      applyLogoutRef.current({ auth: currentUser, broadcast: true, reason: 'force_logout' });
     });
 
     newSocket.on('auth_success', (authenticatedUser: User) => {
+      // FIX: guard against auth_success firing during/after logout
+      // This is the root cause of the 5s ghost user bug on SuperUser dashboard
+      if (isLoggingOutRef.current) {
+        console.log('[auth] Ignoring auth_success — logout in progress');
+        return;
+      }
+
+      // FIX: also ignore if socketRef was nulled (logout completed)
+      if (socketRef.current === null) {
+        console.log('[auth] Ignoring auth_success — socket already cleaned up');
+        return;
+      }
+
       console.log('[socket] Auth success:', authenticatedUser.id);
+      setLoginError('');
       setUser(authenticatedUser);
       setView('dashboard');
       StorageManager.saveAuth(authenticatedUser);
@@ -795,17 +810,18 @@ const App: React.FC = () => {
 
     newSocket.on('auth_failure', ({ message }) => {
       console.log('[socket] Auth failure:', message);
-      alert(message);
+      // FIX: set inline error state instead of alert()
+      setLoginError(message || 'Authentication failed.');
       setLoading(false);
     });
 
     // Cleanup
     return () => {
       console.log('[socket] Cleaning up connection');
-      if (activityPollRef.current) {
-        clearInterval(activityPollRef.current);
-        activityPollRef.current = null;
-      }
+      // FIX: use captured pollId, not ref (handles Strict Mode double-invoke)
+      clearInterval(pollId);
+      activityPollRef.current = null;
+
       if (socketRef.current) {
         socketRef.current.removeAllListeners();
         socketRef.current.disconnect();
@@ -817,13 +833,14 @@ const App: React.FC = () => {
   // ==================== VIEW MANAGEMENT ====================
   useEffect(() => {
     if (!user) return;
+    // FIX: don't update view during logout — prevents view flashing for SuperUser
+    if (isLoggingOutRef.current) return;
 
     const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
     const isSuper = user.role === UserRole.SUPER_USER;
 
     const saved = StorageManager.getLastView();
 
-    // Enforce role-allowed views
     const allowed = (v: typeof view) => {
       if (v === 'monitor' || v === 'management') return isPrivileged;
       if (v === 'settings') return isSuper;
@@ -864,14 +881,15 @@ const App: React.FC = () => {
       return;
     }
 
-    // Prevent logging into a different account without explicit logout
+    setLoginError('');
+
     try {
       const storedAuth = StorageManager.getAuth();
       const incomingEmail = String(credentials?.email || '').toLowerCase().trim();
-      
+
       if (storedAuth && incomingEmail) {
         const existingEmail = String(storedAuth?.email || '').toLowerCase().trim();
-        
+
         if (existingEmail && existingEmail !== incomingEmail) {
           alert(`Already logged in as ${storedAuth?.name || storedAuth?.id}. Please logout first to switch accounts.`);
           return;
@@ -921,11 +939,13 @@ const App: React.FC = () => {
 
   if (!user) {
     return (
-      <Login 
-        onLogin={handleLogin} 
-        users={users} 
-        settings={settings} 
-        onSetIp={setServerIp} 
+      <Login
+        onLogin={handleLogin}
+        users={users}
+        settings={settings}
+        onSetIp={setServerIp}
+        loginError={loginError}
+        onClearError={() => setLoginError('')}
       />
     );
   }
@@ -935,10 +955,10 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
-      <Layout 
-        user={user} 
-        currentView={view} 
-        setView={setView} 
+      <Layout
+        user={user}
+        currentView={view}
+        setView={setView}
         onLogout={handleLogout}
         isPrivileged={isPrivileged}
         isSuper={isSuper}
@@ -946,8 +966,8 @@ const App: React.FC = () => {
         isConnected={isConnected}
       >
         {view === 'dashboard' && !isPrivileged && (
-          <Dashboard 
-            user={user} 
+          <Dashboard
+            user={user}
             settings={settings}
             realtimeStatuses={realtimeStatuses}
             setRealtimeStatuses={setRealtimeStatuses}
@@ -957,7 +977,7 @@ const App: React.FC = () => {
           />
         )}
         {view === 'monitor' && isPrivileged && (
-          <LiveMonitor 
+          <LiveMonitor
             user={user}
             realtimeStatuses={realtimeStatuses}
             setRealtimeStatuses={setRealtimeStatuses}
@@ -969,30 +989,30 @@ const App: React.FC = () => {
           />
         )}
         {view === 'analytics' && (
-          <Analytics 
-            data={performanceHistory} 
-            setData={setPerformanceHistory} 
-            user={user} 
-            users={users} 
+          <Analytics
+            data={performanceHistory}
+            setData={setPerformanceHistory}
+            user={user}
+            users={users}
           />
         )}
         {view === 'management' && isPrivileged && (
-          <Management 
-            currentUser={user} 
-            users={users} 
-            setUsers={setUsers} 
-            history={performanceHistory} 
-            setHistory={setPerformanceHistory} 
+          <Management
+            currentUser={user}
+            users={users}
+            setUsers={setUsers}
+            history={performanceHistory}
+            setHistory={setPerformanceHistory}
             setForceLogoutFlags={setForceLogoutFlags}
             socket={socket}
           />
         )}
         {view === 'settings' && isSuper && (
-          <Settings 
-            settings={settings} 
-            setSettings={setSettings} 
-            users={users} 
-            socket={socket} 
+          <Settings
+            settings={settings}
+            setSettings={setSettings}
+            users={users}
+            socket={socket}
           />
         )}
       </Layout>
