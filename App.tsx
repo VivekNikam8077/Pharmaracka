@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { User, DaySummary, OfficeStatus, StatusLogEntry, UserRole, RealtimeStatus, AppSettings } from './types';
 import Layout from './components/Layout';
@@ -10,6 +9,7 @@ import Management from './components/Management';
 import LiveMonitor from './components/LiveMonitor';
 import Settings from './components/Settings';
 
+// ==================== CONSTANTS ====================
 const DEFAULT_SETTINGS: AppSettings = {
   siteName: 'Pharmarack',
   logoUrl: '',
@@ -18,51 +18,122 @@ const DEFAULT_SETTINGS: AppSettings = {
   availableStatuses: Object.values(OfficeStatus).filter(s => s !== OfficeStatus.LEAVE)
 };
 
-function istStartOfDayMs(ms: number) {
-  const day = toISTDateString(new Date(ms));
-  return new Date(`${day}T00:00:00+05:30`).getTime();
-}
+const STORAGE_KEYS = {
+  ARCHIVE: 'officely_archive_data',
+  ARCHIVE_VERSION: 'officely_archive_seed_version',
+  LAST_VIEW: 'officely_last_view',
+  SETTINGS: 'officely_settings',
+  LOGOUT_BROADCAST: 'officely_logout_broadcast',
+  IDLE_TRACK: 'officely_idle_track_v1',
+  AUTH: 'officely_auth',
+  USER: 'officely_user',
+  USERS: 'officely_users',
+  SERVER_IP: 'officely_server_ip',
+  SESSION_EMAIL_PREFIX: 'officely_session_email_',
+  SESSION_ID_PREFIX: 'officely_session_id_',
+} as const;
 
-const ARCHIVE_STORAGE_KEY = 'officely_archive_data';
-const ARCHIVE_SEED_VERSION_KEY = 'officely_archive_seed_version';
 const ARCHIVE_SEED_VERSION = '2';
-const LAST_VIEW_KEY = 'officely_last_view';
-const SETTINGS_STORAGE_KEY = 'officely_settings';
 
-const toISTDateString = (d: Date) => {
-  try {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(d);
-  } catch (e) {
-    return toDateString(d);
-  }
+// ==================== UTILITY FUNCTIONS ====================
+const utils = {
+  toISTDateString: (d: Date): string => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d);
+    } catch (e) {
+      return utils.toDateString(d);
+    }
+  },
+
+  toISTTimeHHMM: (d: Date): string => {
+    try {
+      return new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(d);
+    } catch (e) {
+      return d.toTimeString().slice(0, 5);
+    }
+  },
+
+  toDateString: (d: Date): string => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  },
+
+  safeParseJson: (raw: string | null): any => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  },
+
+  istStartOfDayMs: (ms: number): number => {
+    const day = utils.toISTDateString(new Date(ms));
+    return new Date(`${day}T00:00:00+05:30`).getTime();
+  },
+
+  createSessionId: (): string => {
+    try {
+      if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+        return crypto.randomUUID();
+      }
+    } catch (e) {}
+    return `sess_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+  },
+
+  getSessionKey: (identifier: string, isEmail: boolean): string => {
+    const prefix = isEmail 
+      ? STORAGE_KEYS.SESSION_EMAIL_PREFIX 
+      : STORAGE_KEYS.SESSION_ID_PREFIX;
+    return `${prefix}${String(identifier || '').toLowerCase().trim()}`;
+  },
+
+  clearAllSessionData: (user?: User | null) => {
+    // Clear auth and user data
+    localStorage.removeItem(STORAGE_KEYS.AUTH);
+    localStorage.removeItem(STORAGE_KEYS.USER);
+    localStorage.removeItem(STORAGE_KEYS.LAST_VIEW);
+
+    // Clear session IDs
+    if (user?.id) {
+      const sessionIdKey = utils.getSessionKey(user.id, false);
+      localStorage.removeItem(sessionIdKey);
+    }
+    if (user?.email) {
+      const sessionEmailKey = utils.getSessionKey(user.email, true);
+      localStorage.removeItem(sessionEmailKey);
+    }
+  },
 };
 
-const toISTTimeHHMM = (d: Date) => {
-  try {
-    return new Intl.DateTimeFormat('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d);
-  } catch (e) {
-    return d.toTimeString().slice(0, 5);
-  }
-};
-
-const computeArchiveFromHistory = (historyRows: any[], presence: RealtimeStatus[], nowMs: number) => {
+// ==================== ARCHIVE COMPUTATION ====================
+const computeArchiveFromHistory = (
+  historyRows: any[], 
+  presence: RealtimeStatus[], 
+  nowMs: number
+): DaySummary[] => {
   const byUser = new Map<string, Array<{ status: string; ts: number }>>();
+  
   for (const row of Array.isArray(historyRows) ? historyRows : []) {
     const userId = String(row?.userId || '');
     const rawStatus = String(row?.status || '');
     const status = rawStatus === 'Feedback' ? OfficeStatus.QUALITY_FEEDBACK : rawStatus;
     const ts = new Date(row?.timestamp).getTime();
+    
     if (!userId || !status || !Number.isFinite(ts)) continue;
+    
     const arr = byUser.get(userId) || [];
     arr.push({ status, ts });
     byUser.set(userId, arr);
@@ -100,6 +171,7 @@ const computeArchiveFromHistory = (historyRows: any[], presence: RealtimeStatus[
 
   for (const [userId, events] of byUser.entries()) {
     const sorted = events.slice().sort((a, b) => a.ts - b.ts);
+    
     for (let i = 0; i < sorted.length; i++) {
       const cur = sorted[i];
       const next = sorted[i + 1];
@@ -119,16 +191,17 @@ const computeArchiveFromHistory = (historyRows: any[], presence: RealtimeStatus[
 
       let cursor = startTs;
       while (cursor < endTs) {
-        const dayStart = istStartOfDayMs(cursor);
+        const dayStart = utils.istStartOfDayMs(cursor);
         const dayEnd = dayStart + 86400000;
         const chunkEnd = Math.min(endTs, dayEnd);
         const minutes = Math.max(0, Math.floor((chunkEnd - cursor) / 60000));
+        
         if (minutes > 0) {
-          const key2 = `${userId}::${toISTDateString(new Date(cursor))}`;
+          const key2 = `${userId}::${utils.toISTDateString(new Date(cursor))}`;
           const existing2 = summaries.get(key2);
           const s2 = existing2 || {
             userId,
-            date: toISTDateString(new Date(cursor)),
+            date: utils.toISTDateString(new Date(cursor)),
             startTs: cursor,
             endTs: chunkEnd,
             productiveMinutes: 0,
@@ -150,12 +223,13 @@ const computeArchiveFromHistory = (historyRows: any[], presence: RealtimeStatus[
 
   const result: DaySummary[] = [];
   for (const s of summaries.values()) {
-    const totalMinutes = s.productiveMinutes + s.lunchMinutes + s.snacksMinutes + s.refreshmentMinutes + s.feedbackMinutes + s.crossUtilMinutes;
+    const totalMinutes = s.productiveMinutes + s.lunchMinutes + s.snacksMinutes + 
+                        s.refreshmentMinutes + s.feedbackMinutes + s.crossUtilMinutes;
     result.push({
       userId: s.userId,
       date: s.date,
-      loginTime: toISTTimeHHMM(new Date(s.startTs)),
-      logoutTime: toISTTimeHHMM(new Date(s.endTs)),
+      loginTime: utils.toISTTimeHHMM(new Date(s.startTs)),
+      logoutTime: utils.toISTTimeHHMM(new Date(s.endTs)),
       productiveMinutes: s.productiveMinutes,
       lunchMinutes: s.lunchMinutes,
       snacksMinutes: s.snacksMinutes,
@@ -170,146 +244,238 @@ const computeArchiveFromHistory = (historyRows: any[], presence: RealtimeStatus[
   return result;
 };
 
-const toDateString = (d: Date) => {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-};
+// ==================== STORAGE MANAGER ====================
+class StorageManager {
+  static getAuth(): User | null {
+    const stored = localStorage.getItem(STORAGE_KEYS.AUTH);
+    return utils.safeParseJson(stored);
+  }
 
-const seedArchiveData = (users: User[]): DaySummary[] => {
-  const base = new Date();
-  const days = 2;
-  const results: DaySummary[] = [];
-  for (const u of users) {
-    for (let i = 0; i < days; i++) {
-      const day = new Date(base);
-      day.setDate(base.getDate() - i);
-      const productiveMinutes = 360 + ((i * 23 + u.id.length * 11) % 121);
-      const lunchMinutes = 30 + ((i * 7) % 21);
-      const snacksMinutes = 15 + ((i * 5) % 16);
-      const refreshmentMinutes = 10 + ((i * 3) % 11);
-      const feedbackMinutes = 20 + ((i * 9) % 26);
-      const crossUtilMinutes = 25 + ((i * 11) % 36);
-      const totalMinutes = productiveMinutes + lunchMinutes + snacksMinutes + refreshmentMinutes + feedbackMinutes + crossUtilMinutes;
-      results.push({
-        userId: u.id,
-        date: toDateString(day),
-        loginTime: '09:30',
-        logoutTime: '18:30',
-        productiveMinutes,
-        lunchMinutes,
-        snacksMinutes,
-        refreshmentMinutes,
-        feedbackMinutes,
-        crossUtilMinutes,
-        totalMinutes,
-      });
+  static saveAuth(user: User) {
+    localStorage.setItem(STORAGE_KEYS.AUTH, JSON.stringify(user));
+    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
+  }
+
+  static getUsers(): User[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.USERS);
+    const parsed = utils.safeParseJson(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  }
+
+  static saveUsers(users: User[]) {
+    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+  }
+
+  static getSettings(): AppSettings {
+    const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+    const parsed = utils.safeParseJson(stored);
+    return parsed || DEFAULT_SETTINGS;
+  }
+
+  static saveSettings(settings: AppSettings) {
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+  }
+
+  static getArchive(): DaySummary[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.ARCHIVE);
+    const parsed = utils.safeParseJson(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  }
+
+  static saveArchive(archive: DaySummary[]) {
+    localStorage.setItem(STORAGE_KEYS.ARCHIVE, JSON.stringify(archive));
+  }
+
+  static getLastView(): 'dashboard' | 'monitor' | 'analytics' | 'management' | 'settings' {
+    const saved = localStorage.getItem(STORAGE_KEYS.LAST_VIEW);
+    if (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' || 
+        saved === 'management' || saved === 'settings') {
+      return saved;
     }
-  }
-  return results;
-};
-
-const ensureArchiveForUsers = (existing: DaySummary[], users: User[]) => {
-  let merged = Array.isArray(existing) ? existing.slice() : [];
-  let changed = false;
-
-  for (const u of Array.isArray(users) ? users : []) {
-    const email = (u.email || '').toLowerCase();
-    const hasAny = merged.some(d => d.userId === u.id || (email && d.userId.toLowerCase() === email));
-    if (!hasAny) continue;
+    return 'dashboard';
   }
 
-  return { merged, changed };
-};
+  static saveLastView(view: string) {
+    localStorage.setItem(STORAGE_KEYS.LAST_VIEW, view);
+  }
 
+  static getOrCreateSessionId(identifier: string, isEmail: boolean): string {
+    const key = utils.getSessionKey(identifier, isEmail);
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    
+    const newSessionId = utils.createSessionId();
+    localStorage.setItem(key, newSessionId);
+    return newSessionId;
+  }
+}
+
+// ==================== MAIN APP COMPONENT ====================
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(() => {
-    const storedAuth = localStorage.getItem('officely_auth');
-    if (!storedAuth) return null;
-    try {
-      return JSON.parse(storedAuth);
-    } catch (e) {
-      return null;
-    }
-  });
+  // ==================== STATE ====================
+  const [user, setUser] = useState<User | null>(() => StorageManager.getAuth());
   const [loading, setLoading] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'monitor' | 'analytics' | 'management' | 'settings'>(() => {
-    const saved = localStorage.getItem(LAST_VIEW_KEY);
-    if (!saved) return 'dashboard';
-    if (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' || saved === 'management' || saved === 'settings') return saved;
-    return 'dashboard';
-  });
-  const [users, setUsers] = useState<User[]>(() => {
-    const stored = localStorage.getItem('officely_users');
-    if (!stored) return [];
-    try {
-      const parsed = JSON.parse(stored);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      return [];
-    }
-  });
-  const [performanceHistory, setPerformanceHistory] = useState<DaySummary[]>([]);
+  const [view, setView] = useState<'dashboard' | 'monitor' | 'analytics' | 'management' | 'settings'>(
+    () => StorageManager.getLastView()
+  );
+  const [users, setUsers] = useState<User[]>(() => StorageManager.getUsers());
+  const [performanceHistory, setPerformanceHistory] = useState<DaySummary[]>(() => StorageManager.getArchive());
   const [hasSynced, setHasSynced] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>(() => {
-    const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!stored) return DEFAULT_SETTINGS;
-    try {
-      return JSON.parse(stored);
-    } catch (e) {
-      return DEFAULT_SETTINGS;
-    }
-  });
+  const [settings, setSettings] = useState<AppSettings>(() => StorageManager.getSettings());
   const [realtimeStatuses, setRealtimeStatuses] = useState<RealtimeStatus[]>([]);
   const [forceLogoutFlags, setForceLogoutFlags] = useState<Set<string>>(new Set());
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
-  
   const [socket, setSocket] = useState<Socket | null>(null);
+
+  // ==================== REFS ====================
   const socketRef = useRef<Socket | null>(null);
   const realtimeStatusesRef = useRef<RealtimeStatus[]>([]);
   const serverOffsetRef = useRef(0);
+  const activityPollRef = useRef<NodeJS.Timeout | null>(null);
+  const isLoggingOutRef = useRef(false);
 
-  const createSessionId = () => {
-    try {
-      if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
-    } catch (e) {}
-    return `sess_${Math.random().toString(36).slice(2)}_${Date.now()}`;
-  };
-
-  const getOrCreateSessionIdForEmail = (email: string) => {
-    const key = `officely_session_email_${String(email || '').toLowerCase().trim()}`;
-    const existing = localStorage.getItem(key);
-    if (existing) return existing;
-    const next = createSessionId();
-    localStorage.setItem(key, next);
-    return next;
-  };
-
-  const getOrCreateSessionIdForUserId = (userId: string) => {
-    const key = `officely_session_id_${userId}`;
-    const existing = localStorage.getItem(key);
-    if (existing) return existing;
-    const next = createSessionId();
-    localStorage.setItem(key, next);
-    return next;
-  };
-
-  // Connection logic
-  useEffect(() => {
-    const storedArchive = localStorage.getItem(ARCHIVE_STORAGE_KEY);
-    if (storedArchive) {
-      try {
-        setPerformanceHistory(JSON.parse(storedArchive));
-      } catch (e) {}
+  // ==================== LOGOUT HANDLER ====================
+  const applyLogout = useCallback((opts?: { 
+    auth?: User | null; 
+    broadcast?: boolean; 
+    reason?: string;
+    skipEmit?: boolean;
+  }) => {
+    // Prevent multiple simultaneous logout operations
+    if (isLoggingOutRef.current) {
+      console.log('[logout] Already logging out, skipping...');
+      return;
     }
 
-    // Check for a saved server address in localStorage.
-    // - Full URL: use as-is
-    // - IPv4: assume local network and port 3001 over http
-    // - Hostname/domain: assume deployed server over https (no port)
-    const savedServer = localStorage.getItem('officely_server_ip');
+    isLoggingOutRef.current = true;
+    const auth = opts?.auth || user;
+    const broadcast = Boolean(opts?.broadcast);
+    const skipEmit = Boolean(opts?.skipEmit);
+
+    console.log('[logout] Starting logout process', { 
+      userId: auth?.id, 
+      reason: opts?.reason,
+      broadcast,
+      skipEmit
+    });
+
+    try {
+      // 1. Emit logout event to server (unless explicitly skipped)
+      if (!skipEmit && auth?.id && socketRef.current?.connected) {
+        console.log('[logout] Emitting user_logout to server');
+        socketRef.current.emit('user_logout', auth.id);
+      }
+
+      // 2. Disconnect socket completely
+      if (socketRef.current) {
+        console.log('[logout] Disconnecting socket');
+        socketRef.current.removeAllListeners();
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+
+      // 3. Clear all storage
+      console.log('[logout] Clearing storage');
+      utils.clearAllSessionData(auth);
+
+      // 4. Reset all state
+      console.log('[logout] Resetting state');
+      setSocket(null);
+      setUser(null);
+      setView('dashboard');
+      setRealtimeStatuses([]);
+      setPerformanceHistory([]);
+      setHasSynced(false);
+      realtimeStatusesRef.current = [];
+
+      // 5. Broadcast to other tabs
+      if (broadcast) {
+        console.log('[logout] Broadcasting to other tabs');
+        try {
+          localStorage.setItem(STORAGE_KEYS.LOGOUT_BROADCAST, JSON.stringify({
+            ts: Date.now(),
+            reason: opts?.reason || 'logout',
+            userId: auth?.id || null,
+            email: auth?.email || null,
+          }));
+          // Remove the broadcast flag after a short delay
+          setTimeout(() => {
+            localStorage.removeItem(STORAGE_KEYS.LOGOUT_BROADCAST);
+          }, 1000);
+        } catch (e) {
+          console.error('[logout] Failed to broadcast:', e);
+        }
+      }
+
+      console.log('[logout] Logout complete');
+    } catch (error) {
+      console.error('[logout] Error during logout:', error);
+    } finally {
+      // Reset the logout flag after a delay to prevent rapid re-logout
+      setTimeout(() => {
+        isLoggingOutRef.current = false;
+      }, 500);
+    }
+  }, [user]);
+
+  // ==================== STORAGE EVENT LISTENER (CROSS-TAB SYNC) ====================
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      // Skip if currently logging out
+      if (isLoggingOutRef.current) return;
+
+      // 1) If auth is removed in another tab
+      if (e.key === STORAGE_KEYS.AUTH && e.newValue === null) {
+        console.log('[storage] Auth removed in another tab');
+        let oldAuth: User | null = null;
+        try {
+          if (e.oldValue) oldAuth = JSON.parse(e.oldValue);
+        } catch (err) {}
+        applyLogout({ auth: oldAuth, broadcast: false, reason: 'auth_removed', skipEmit: true });
+        return;
+      }
+
+      // 2) Explicit logout broadcast from another tab
+      if (e.key === STORAGE_KEYS.LOGOUT_BROADCAST && e.newValue) {
+        console.log('[storage] Logout broadcast received');
+        let payload: any = null;
+        try {
+          payload = JSON.parse(e.newValue);
+        } catch (err) {}
+        
+        // Only logout if the broadcast is for current user or is a global logout
+        if (!user || !payload?.userId || payload.userId === user.id) {
+          applyLogout({ auth: payload, broadcast: false, reason: 'logout_broadcast', skipEmit: true });
+        }
+      }
+
+      // 3) Session ID changes (another tab took over)
+      if (user?.id && e.key === utils.getSessionKey(user.id, false) && e.newValue !== e.oldValue) {
+        console.log('[storage] Session ID changed, another tab took over');
+        applyLogout({ auth: user, broadcast: false, reason: 'session_takeover', skipEmit: true });
+      }
+    };
+
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [applyLogout, user]);
+
+  // ==================== SOCKET CONNECTION ====================
+  useEffect(() => {
+    // If already have a socket, don't recreate
+    if (socketRef.current) return;
+
+    console.log('[socket] Initializing connection');
+
+    // Load archive
+    const storedArchive = StorageManager.getArchive();
+    if (storedArchive.length > 0) {
+      setPerformanceHistory(storedArchive);
+    }
+
+    // Determine server URL
+    const savedServer = localStorage.getItem(STORAGE_KEYS.SERVER_IP);
     const isIpv4 = (v: string) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(v);
     const envServer = (import.meta as any)?.env?.VITE_BACKEND_URL as string | undefined;
     const localhostDefault = 'https://server2-e3p9.onrender.com';
@@ -332,19 +498,27 @@ const App: React.FC = () => {
                   ? localhostDefault
                   : `http://${window.location.hostname}:3001`)));
     
-    console.log(`Connecting to Officely Backend: ${serverUrl}`);
+    console.log(`[socket] Connecting to: ${serverUrl}`);
     
-    socketRef.current = io(serverUrl, { 
+    // Create socket connection
+    const newSocket = io(serverUrl, { 
       reconnection: true,
       reconnectionAttempts: Infinity,
-      timeout: 10000 
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+      autoConnect: true,
     });
 
-    const activityPoll = window.setInterval(async () => {
+    socketRef.current = newSocket;
+    setSocket(newSocket);
+
+    // ==================== ACTIVITY POLLING ====================
+    activityPollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`${serverUrl}/api/Office/status`);
         if (!res.ok) {
-          console.warn('[activity] poll failed', res.status);
+          console.warn('[activity] Poll failed', res.status);
           return;
         }
         const json = await res.json();
@@ -352,13 +526,23 @@ const App: React.FC = () => {
         if (snapshot.length === 0) return;
 
         setRealtimeStatuses((prev) => {
+          const nowMs = Date.now() + serverOffsetRef.current;
+          const dayKey = utils.toISTDateString(new Date(nowMs));
+          const idleStoreRaw = utils.safeParseJson(localStorage.getItem(STORAGE_KEYS.IDLE_TRACK));
+          const idleStore: any = (idleStoreRaw && typeof idleStoreRaw === 'object') ? idleStoreRaw : {};
+          const dayBucket: any = (idleStore[dayKey] && typeof idleStore[dayKey] === 'object') ? idleStore[dayKey] : {};
+
           const byId = new Map<string, RealtimeStatus>(
             prev.map((p) => [p.userId, p] as const)
           );
+
           for (const s of snapshot) {
             const userId = String(s?.user_id ?? '').trim();
             if (!userId) continue;
+            
             const existing = byId.get(userId);
+            if (!existing) continue; // Don't add users that aren't in presence
+
             const nextActivityRaw = Number(s?.status);
             const nextActivity = (nextActivityRaw === 0 || nextActivityRaw === 1 || nextActivityRaw === 2)
               ? (nextActivityRaw as 0 | 1 | 2)
@@ -368,71 +552,121 @@ const App: React.FC = () => {
               ? updatedAtRaw
               : undefined;
 
-            if (existing) {
-              const existingLast = typeof existing.lastActivityAt === 'number' ? existing.lastActivityAt : undefined;
-              const shouldBump = typeof nextUpdatedAt === 'number' && (!existingLast || nextUpdatedAt > existingLast);
-              byId.set(userId, {
-                ...existing,
-                activity: nextActivity,
-                ...(shouldBump ? { lastActivityAt: nextUpdatedAt, activityUpdatedAt: nextUpdatedAt } : {}),
-              });
-              continue;
+            const prevActivity = (existing && typeof existing.activity === 'number') ? existing.activity : undefined;
+            const prevIdleStart = dayBucket?.[userId]?.idleStartMs;
+            const prevIdleStartMs = (typeof prevIdleStart === 'number' && Number.isFinite(prevIdleStart)) ? prevIdleStart : null;
+            const prevIdleTotalMsRaw = dayBucket?.[userId]?.idleTotalMs;
+            const prevIdleTotalMs = (typeof prevIdleTotalMsRaw === 'number' && Number.isFinite(prevIdleTotalMsRaw)) ? prevIdleTotalMsRaw : 0;
+
+            const effectiveTs = (typeof nextUpdatedAt === 'number' && Number.isFinite(nextUpdatedAt)) ? nextUpdatedAt : nowMs;
+            const nextIsIdle = nextActivity === 0;
+            const prevIsIdle = prevActivity === 0;
+
+            const currentStatus = (existing?.status || OfficeStatus.AVAILABLE) as OfficeStatus;
+            const allowIdleTracking = currentStatus === OfficeStatus.AVAILABLE;
+
+            if (!allowIdleTracking) {
+              if (typeof prevIdleStartMs === 'number') {
+                const delta = Math.max(0, effectiveTs - prevIdleStartMs);
+                dayBucket[userId] = {
+                  ...(dayBucket[userId] || {}),
+                  idleStartMs: null,
+                  idleTotalMs: prevIdleTotalMs + delta,
+                };
+              }
+            } else if (nextIsIdle && (typeof prevIdleStartMs !== 'number')) {
+              dayBucket[userId] = {
+                ...(dayBucket[userId] || {}),
+                idleStartMs: effectiveTs,
+                idleTotalMs: prevIdleTotalMs,
+              };
+            } else if (nextIsIdle && !prevIsIdle) {
+              dayBucket[userId] = {
+                ...(dayBucket[userId] || {}),
+                idleStartMs: effectiveTs,
+                idleTotalMs: prevIdleTotalMs,
+              };
+            } else if (!nextIsIdle && prevIsIdle) {
+              if (typeof prevIdleStartMs === 'number') {
+                const delta = Math.max(0, effectiveTs - prevIdleStartMs);
+                dayBucket[userId] = {
+                  ...(dayBucket[userId] || {}),
+                  idleStartMs: null,
+                  idleTotalMs: prevIdleTotalMs + delta,
+                };
+              } else {
+                dayBucket[userId] = {
+                  ...(dayBucket[userId] || {}),
+                  idleStartMs: null,
+                  idleTotalMs: prevIdleTotalMs,
+                };
+              }
             }
 
-            // If the user isn't present in realtimeStatuses yet (no socket presence), create a minimal entry
-            // so LiveMonitor can still show the activity dot.
+            const existingLast = typeof existing.lastActivityAt === 'number' ? existing.lastActivityAt : undefined;
+            const shouldBump = typeof nextUpdatedAt === 'number' && (!existingLast || nextUpdatedAt > existingLast);
+            
             byId.set(userId, {
-              userId,
-              userName: userId,
-              role: UserRole.STANDARD,
-              status: OfficeStatus.AVAILABLE,
-              lastUpdate: new Date().toISOString(),
+              ...existing,
               activity: nextActivity,
-              ...(typeof nextUpdatedAt === 'number' ? { lastActivityAt: nextUpdatedAt, activityUpdatedAt: nextUpdatedAt } : {}),
+              ...(shouldBump ? { lastActivityAt: nextUpdatedAt, activityUpdatedAt: nextUpdatedAt } : {}),
             });
           }
+
           const next = Array.from(byId.values());
-          console.debug('[activity] poll applied', snapshot.length);
           realtimeStatusesRef.current = next;
+
+          try {
+            idleStore[dayKey] = dayBucket;
+            localStorage.setItem(STORAGE_KEYS.IDLE_TRACK, JSON.stringify(idleStore));
+          } catch (e) {}
+
           return next;
         });
       } catch (e) {
-        console.warn('[activity] poll error', e);
+        console.warn('[activity] Poll error', e);
       }
     }, 2000);
 
-    setSocket(socketRef.current);
-
-    socketRef.current.on('connect', () => {
+    // ==================== SOCKET EVENT HANDLERS ====================
+    
+    newSocket.on('connect', () => {
+      console.log('[socket] Connected');
       setIsConnected(true);
       setLoading(false);
 
-      // Restore socket identity for persisted sessions so server can authorize settings updates
+      // Resume session if we have stored auth
       try {
-        const storedAuth = localStorage.getItem('officely_auth');
-        if (storedAuth) {
-          const parsed = JSON.parse(storedAuth);
-          if (parsed?.id) {
-            const sessionId = parsed?.email
-              ? getOrCreateSessionIdForEmail(parsed.email)
-              : getOrCreateSessionIdForUserId(parsed.id);
-            socketRef.current?.emit('auth_resume', { userId: parsed.id, sessionId });
-          }
+        const storedAuth = StorageManager.getAuth();
+        if (storedAuth?.id) {
+          const sessionId = storedAuth?.email
+            ? StorageManager.getOrCreateSessionId(storedAuth.email, true)
+            : StorageManager.getOrCreateSessionId(storedAuth.id, false);
+          
+          console.log('[socket] Resuming session for user:', storedAuth.id);
+          newSocket.emit('auth_resume', { userId: storedAuth.id, sessionId });
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('[socket] Failed to resume session:', e);
+      }
     });
 
-    socketRef.current.on('connect_error', (err) => {
-      console.error('Connection Failed:', err.message);
-      // Even if it fails, we stop the loader to show the connection error state in Layout if logged in
+    newSocket.on('connect_error', (err) => {
+      console.error('[socket] Connection error:', err.message);
       setLoading(false);
     });
 
-    socketRef.current.on('disconnect', () => setIsConnected(false));
+    newSocket.on('disconnect', (reason) => {
+      console.log('[socket] Disconnected:', reason);
+      setIsConnected(false);
+    });
 
-    socketRef.current.on('system_sync', ({ users, presence, history, settings: syncedSettings, serverTime }) => {
+    newSocket.on('system_sync', ({ users, presence, history, settings: syncedSettings, serverTime }) => {
+      console.log('[socket] System sync received');
+      
       setUsers(users);
-      localStorage.setItem('officely_users', JSON.stringify(users));
+      StorageManager.saveUsers(users);
+      
       setRealtimeStatuses(presence);
       realtimeStatusesRef.current = presence;
       setHasSynced(true);
@@ -444,41 +678,39 @@ const App: React.FC = () => {
       }
 
       if (syncedSettings) {
-        console.log('[settings] system_sync', syncedSettings);
+        console.log('[socket] Settings sync:', syncedSettings);
         setSettings(syncedSettings);
-        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(syncedSettings));
+        StorageManager.saveSettings(syncedSettings);
       }
 
       if (Array.isArray(history) && history.length > 0) {
         const computed = computeArchiveFromHistory(history, presence, Date.now() + serverOffsetRef.current);
-        localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(computed));
+        StorageManager.saveArchive(computed);
         setPerformanceHistory(computed);
-      } else {
-        const existing = localStorage.getItem(ARCHIVE_STORAGE_KEY);
-        if (existing) {
-          try {
-            setPerformanceHistory(JSON.parse(existing));
-          } catch (e) {}
-        } else {
-          setPerformanceHistory([]);
-        }
       }
     });
 
-    socketRef.current.on('users_update', (updatedUsers) => {
+    newSocket.on('users_update', (updatedUsers) => {
+      console.log('[socket] Users update');
       setUsers(updatedUsers);
-      localStorage.setItem('officely_users', JSON.stringify(updatedUsers));
+      StorageManager.saveUsers(updatedUsers);
     });
 
-    socketRef.current.on('history_update', (historyRows) => {
+    newSocket.on('history_update', (historyRows) => {
       try {
-        const computed = computeArchiveFromHistory(historyRows, realtimeStatusesRef.current, Date.now() + serverOffsetRef.current);
-        localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(computed));
+        const computed = computeArchiveFromHistory(
+          historyRows, 
+          realtimeStatusesRef.current, 
+          Date.now() + serverOffsetRef.current
+        );
+        StorageManager.saveArchive(computed);
         setPerformanceHistory(computed);
-      } catch (e) {}
+      } catch (e) {
+        console.error('[socket] Failed to update history:', e);
+      }
     });
     
-    socketRef.current.on('presence_update', (data: RealtimeStatus) => {
+    newSocket.on('presence_update', (data: RealtimeStatus) => {
       try {
         const st = (data as any)?.serverTime;
         if (typeof st === 'number' && Number.isFinite(st)) {
@@ -487,16 +719,22 @@ const App: React.FC = () => {
           setServerOffsetMs(offset);
         }
       } catch (e) {}
+
       setRealtimeStatuses(prev => {
         const existing = prev.find((p) => p.userId === data.userId);
         const incomingLastAt = (data as any)?.lastActivityAt;
         const normalizedLastAt = (typeof incomingLastAt === 'number' && Number.isFinite(incomingLastAt))
           ? incomingLastAt
           : (existing?.lastActivityAt);
+        
         const normalized: RealtimeStatus = {
           ...(data as any),
-          ...(typeof normalizedLastAt === 'number' ? { lastActivityAt: normalizedLastAt, activityUpdatedAt: normalizedLastAt } : {}),
+          ...(typeof normalizedLastAt === 'number' ? { 
+            lastActivityAt: normalizedLastAt, 
+            activityUpdatedAt: normalizedLastAt 
+          } : {}),
         } as RealtimeStatus;
+        
         const filtered = prev.filter(s => s.userId !== data.userId);
         const next = [...filtered, normalized];
         realtimeStatusesRef.current = next;
@@ -504,7 +742,28 @@ const App: React.FC = () => {
       });
     });
 
-    socketRef.current.on('user_offline', (userId: string) => {
+    newSocket.on('user_offline', (userId: string) => {
+      console.log('[socket] User offline:', userId);
+
+      // Close any open idle session for this user
+      try {
+        const nowMs = Date.now() + serverOffsetRef.current;
+        const dayKey = utils.toISTDateString(new Date(nowMs));
+        const idleStoreRaw = utils.safeParseJson(localStorage.getItem(STORAGE_KEYS.IDLE_TRACK));
+        const idleStore: any = (idleStoreRaw && typeof idleStoreRaw === 'object') ? idleStoreRaw : {};
+        const dayBucket: any = (idleStore[dayKey] && typeof idleStore[dayKey] === 'object') ? idleStore[dayKey] : {};
+        const row = dayBucket?.[userId];
+        const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs)) ? row.idleStartMs : null;
+        const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs)) ? row.idleTotalMs : 0;
+        
+        if (typeof idleStartMs === 'number') {
+          const delta = Math.max(0, nowMs - idleStartMs);
+          dayBucket[userId] = { ...(row || {}), idleStartMs: null, idleTotalMs: idleTotalMs + delta };
+          idleStore[dayKey] = dayBucket;
+          localStorage.setItem(STORAGE_KEYS.IDLE_TRACK, JSON.stringify(idleStore));
+        }
+      } catch (e) {}
+
       setRealtimeStatuses(prev => {
         const next = prev.filter(s => s.userId !== userId);
         realtimeStatusesRef.current = next;
@@ -512,68 +771,57 @@ const App: React.FC = () => {
       });
     });
 
-    socketRef.current.on('settings_update', (nextSettings: AppSettings) => {
+    newSocket.on('settings_update', (nextSettings: AppSettings) => {
       if (!nextSettings) return;
-      console.log('[settings] settings_update', nextSettings);
+      console.log('[socket] Settings update:', nextSettings);
       setSettings(nextSettings);
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(nextSettings));
+      StorageManager.saveSettings(nextSettings);
     });
 
-    socketRef.current.on('session_exists', ({ message }) => {
-      const shouldTakeover = window.confirm(`${message || 'Already logged in elsewhere.'}\n\nDo you want to logout the previous session and continue?`);
-      if (shouldTakeover) socketRef.current?.emit('session_takeover');
-      else socketRef.current?.emit('session_takeover_cancel');
-    });
-
-    socketRef.current.on('force_logout', ({ message }) => {
+    newSocket.on('force_logout', ({ message }) => {
+      console.log('[socket] Force logout received');
       alert(message || 'You have been logged out.');
-      try {
-        const storedAuth = localStorage.getItem('officely_auth');
-        if (storedAuth) {
-          const parsed = JSON.parse(storedAuth);
-          if (parsed?.id) localStorage.removeItem(`officely_session_id_${parsed.id}`);
-          if (parsed?.email) localStorage.removeItem(`officely_session_email_${String(parsed.email).toLowerCase().trim()}`);
-        }
-      } catch (e) {}
-      localStorage.removeItem('officely_auth');
-      localStorage.removeItem('officely_user');
-      localStorage.removeItem(LAST_VIEW_KEY);
-      setUser(null);
-      setView('dashboard');
-      setRealtimeStatuses([]);
-      setPerformanceHistory([]);
+      
+      const currentUser = StorageManager.getAuth();
+      applyLogout({ auth: currentUser, broadcast: true, reason: 'force_logout' });
     });
 
-    socketRef.current.on('auth_success', (authenticatedUser: User) => {
+    newSocket.on('auth_success', (authenticatedUser: User) => {
+      console.log('[socket] Auth success:', authenticatedUser.id);
       setUser(authenticatedUser);
       setView('dashboard');
-      localStorage.setItem('officely_auth', JSON.stringify(authenticatedUser));
-      localStorage.setItem('officely_user', JSON.stringify(authenticatedUser));
+      StorageManager.saveAuth(authenticatedUser);
     });
 
-    socketRef.current.on('auth_failure', ({ message }) => {
+    newSocket.on('auth_failure', ({ message }) => {
+      console.log('[socket] Auth failure:', message);
       alert(message);
+      setLoading(false);
     });
 
+    // Cleanup
     return () => {
+      console.log('[socket] Cleaning up connection');
+      if (activityPollRef.current) {
+        clearInterval(activityPollRef.current);
+        activityPollRef.current = null;
+      }
       if (socketRef.current) {
+        socketRef.current.removeAllListeners();
         socketRef.current.disconnect();
         socketRef.current = null;
       }
-      window.clearInterval(activityPoll);
     };
-  }, []);
+  }, []); // Empty deps - only run once
 
+  // ==================== VIEW MANAGEMENT ====================
   useEffect(() => {
     if (!user) return;
 
     const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
     const isSuper = user.role === UserRole.SUPER_USER;
 
-    const saved = localStorage.getItem(LAST_VIEW_KEY);
-    const desired = (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' || saved === 'management' || saved === 'settings')
-      ? saved
-      : null;
+    const saved = StorageManager.getLastView();
 
     // Enforce role-allowed views
     const allowed = (v: typeof view) => {
@@ -584,8 +832,8 @@ const App: React.FC = () => {
       return false;
     };
 
-    if (desired && allowed(desired as any)) {
-      setView(desired as any);
+    if (allowed(saved)) {
+      setView(saved);
     } else {
       setView(isPrivileged ? 'monitor' : 'dashboard');
     }
@@ -593,81 +841,94 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!user) return;
-    localStorage.setItem(LAST_VIEW_KEY, view);
+    StorageManager.saveLastView(view);
   }, [view, user]);
 
+  // ==================== SETTINGS EFFECTS ====================
   useEffect(() => {
     if (settings?.siteName) document.title = settings.siteName;
   }, [settings?.siteName]);
 
   useEffect(() => {
-    if (settings.darkMode) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
+    if (settings.darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
   }, [settings.darkMode]);
 
-  const handleLogin = (credentials: any) => {
-    if (!isConnected) return alert("System Offline: Cannot authorize at this time.");
+  // ==================== EVENT HANDLERS ====================
+  const handleLogin = useCallback((credentials: any) => {
+    if (!isConnected) {
+      alert("System Offline: Cannot authorize at this time.");
+      return;
+    }
 
-    // Prevent logging into a different account in the same browser profile without explicit logout.
+    // Prevent logging into a different account without explicit logout
     try {
-      const storedAuth = localStorage.getItem('officely_auth');
+      const storedAuth = StorageManager.getAuth();
       const incomingEmail = String(credentials?.email || '').toLowerCase().trim();
+      
       if (storedAuth && incomingEmail) {
-        const parsed = JSON.parse(storedAuth);
-        const existingId = String(parsed?.id || '').toLowerCase().trim();
-        const existingEmail = String(parsed?.email || '').toLowerCase().trim();
-        const isDifferentUser = (existingId && existingId !== incomingEmail) && (existingEmail && existingEmail !== incomingEmail);
-        if (isDifferentUser) {
-          alert(`Already logged in as ${parsed?.name || parsed?.id}. Please logout first to switch accounts.`);
+        const existingEmail = String(storedAuth?.email || '').toLowerCase().trim();
+        
+        if (existingEmail && existingEmail !== incomingEmail) {
+          alert(`Already logged in as ${storedAuth?.name || storedAuth?.id}. Please logout first to switch accounts.`);
           return;
         }
       }
-    } catch (e) {}
-
-    const sessionId = getOrCreateSessionIdForEmail(credentials?.email);
-    socket?.emit('auth_login', { ...credentials, sessionId });
-  };
-
-  const handleLogout = () => {
-    if (user && socket) socket.emit('user_logout', user.id);
-    if (user) {
-      localStorage.removeItem(`officely_session_id_${user.id}`);
-      if (user?.email) localStorage.removeItem(`officely_session_email_${String(user.email).toLowerCase().trim()}`);
+    } catch (e) {
+      console.error('[login] Error checking existing auth:', e);
     }
-    localStorage.removeItem('officely_auth');
-    localStorage.removeItem('officely_user');
-    localStorage.removeItem(LAST_VIEW_KEY);
-    setUser(null);
-    setView('dashboard');
-    setRealtimeStatuses([]);
-    setPerformanceHistory([]);
-  };
 
-  // Special config for manual server IP setting
-  const setServerIp = () => {
+    const sessionId = StorageManager.getOrCreateSessionId(credentials?.email, true);
+    console.log('[login] Attempting login');
+    socket?.emit('auth_login', { ...credentials, sessionId });
+  }, [isConnected, socket]);
+
+  const handleLogout = useCallback(() => {
+    console.log('[logout] Manual logout triggered');
+    applyLogout({ auth: user, broadcast: true, reason: 'manual_logout' });
+  }, [applyLogout, user]);
+
+  const setServerIp = useCallback(() => {
     const ip = prompt(
       "Enter Server URL (https://server2-e3p9.onrender.com) or Server IP (192.168.1.5):",
-      localStorage.getItem('officely_server_ip') || 'https://server2-e3p9.onrender.com'
+      localStorage.getItem(STORAGE_KEYS.SERVER_IP) || 'https://server2-e3p9.onrender.com'
     );
     if (ip !== null) {
-      localStorage.setItem('officely_server_ip', ip);
+      localStorage.setItem(STORAGE_KEYS.SERVER_IP, ip);
       window.location.reload();
     }
-  };
+  }, []);
 
-  if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
-      <div className="flex flex-col items-center gap-8 w-full max-w-xs px-6">
-        <div className="relative">
-          <div className="w-16 h-16 border-4 border-slate-200 dark:border-slate-800 rounded-full"></div>
-          <div className="absolute inset-0 w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+  // ==================== RENDER ====================
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <div className="flex flex-col items-center gap-8 w-full max-w-xs px-6">
+          <div className="relative">
+            <div className="w-16 h-16 border-4 border-slate-200 dark:border-slate-800 rounded-full"></div>
+            <div className="absolute inset-0 w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] animate-pulse">
+            Establishing Secure Node...
+          </p>
         </div>
-        <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] animate-pulse">Establishing Secure Node...</p>
       </div>
-    </div>
-  );
+    );
+  }
 
-  if (!user) return <Login onLogin={handleLogin as any} users={users} settings={settings} onSetIp={setServerIp} />;
+  if (!user) {
+    return (
+      <Login 
+        onLogin={handleLogin} 
+        users={users} 
+        settings={settings} 
+        onSetIp={setServerIp} 
+      />
+    );
+  }
 
   const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
   const isSuper = user.role === UserRole.SUPER_USER;
@@ -676,8 +937,8 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
       <Layout 
         user={user} 
-        currentView={view as any} 
-        setView={setView as any} 
+        currentView={view} 
+        setView={setView} 
         onLogout={handleLogout}
         isPrivileged={isPrivileged}
         isSuper={isSuper}
@@ -707,7 +968,14 @@ const App: React.FC = () => {
             serverOffsetMs={serverOffsetMs}
           />
         )}
-        {view === 'analytics' && <Analytics data={performanceHistory} setData={setPerformanceHistory} user={user} users={users} />}
+        {view === 'analytics' && (
+          <Analytics 
+            data={performanceHistory} 
+            setData={setPerformanceHistory} 
+            user={user} 
+            users={users} 
+          />
+        )}
         {view === 'management' && isPrivileged && (
           <Management 
             currentUser={user} 
@@ -719,7 +987,14 @@ const App: React.FC = () => {
             socket={socket}
           />
         )}
-        {view === 'settings' && isSuper && <Settings settings={settings} setSettings={setSettings} users={users} socket={socket} />}
+        {view === 'settings' && isSuper && (
+          <Settings 
+            settings={settings} 
+            setSettings={setSettings} 
+            users={users} 
+            socket={socket} 
+          />
+        )}
       </Layout>
     </div>
   );
