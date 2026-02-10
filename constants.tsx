@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { OfficeStatus } from './types';
 import { 
