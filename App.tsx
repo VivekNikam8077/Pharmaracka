@@ -30,7 +30,6 @@ const STORAGE_KEYS = {
   USERS: 'officely_users',
   SERVER_IP: 'officely_server_ip',
   SESSION_EMAIL_PREFIX: 'officely_session_email_',
-  SESSION_ID_PREFIX: 'officely_session_id_',
 } as const;
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -91,11 +90,9 @@ const utils = {
     return `sess_${Math.random().toString(36).slice(2)}_${Date.now()}`;
   },
 
-  getSessionKey: (identifier: string, isEmail: boolean): string => {
-    const prefix = isEmail
-      ? STORAGE_KEYS.SESSION_EMAIL_PREFIX
-      : STORAGE_KEYS.SESSION_ID_PREFIX;
-    return `${prefix}${String(identifier || '').toLowerCase().trim()}`;
+  // FIX: Always use email for session key
+  getSessionKey: (email: string): string => {
+    return `${STORAGE_KEYS.SESSION_EMAIL_PREFIX}${String(email || '').toLowerCase().trim()}`;
   },
 
   clearAllSessionData: (user?: User | null) => {
@@ -103,12 +100,8 @@ const utils = {
     localStorage.removeItem(STORAGE_KEYS.USER);
     localStorage.removeItem(STORAGE_KEYS.LAST_VIEW);
 
-    if (user?.id) {
-      const sessionIdKey = utils.getSessionKey(user.id, false);
-      localStorage.removeItem(sessionIdKey);
-    }
     if (user?.email) {
-      const sessionEmailKey = utils.getSessionKey(user.email, true);
+      const sessionEmailKey = utils.getSessionKey(user.email);
       localStorage.removeItem(sessionEmailKey);
     }
   },
@@ -295,13 +288,18 @@ class StorageManager {
     localStorage.setItem(STORAGE_KEYS.LAST_VIEW, view);
   }
 
-  static getOrCreateSessionId(identifier: string, isEmail: boolean): string {
-    const key = utils.getSessionKey(identifier, isEmail);
+  // FIX: Always use email for session ID storage
+  static getOrCreateSessionId(email: string): string {
+    const key = utils.getSessionKey(email);
     const existing = localStorage.getItem(key);
-    if (existing) return existing;
+    if (existing) {
+      console.log('[storage] Using existing sessionId for email:', email);
+      return existing;
+    }
 
     const newSessionId = utils.createSessionId();
     localStorage.setItem(key, newSessionId);
+    console.log('[storage] Created new sessionId for email:', email, newSessionId);
     return newSessionId;
   }
 }
@@ -331,7 +329,8 @@ const App: React.FC = () => {
   const serverOffsetRef = useRef(0);
   const activityPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isLoggingOutRef = useRef(false);
-  const isLoggedInRef = useRef(false); // FIX: Track login state
+  const isLoggedInRef = useRef(false);
+  const freshLoginRef = useRef(false); // FIX: Track fresh login
   const applyLogoutRef = useRef<(opts?: any) => void>(() => {});
 
   // ==================== LOGOUT HANDLER ====================
@@ -347,7 +346,8 @@ const App: React.FC = () => {
     }
 
     isLoggingOutRef.current = true;
-    isLoggedInRef.current = false; // FIX: Mark as logged out immediately
+    isLoggedInRef.current = false;
+    freshLoginRef.current = false; // FIX: Clear fresh login flag
 
     const auth = opts?.auth || user;
     const broadcast = Boolean(opts?.broadcast);
@@ -355,13 +355,13 @@ const App: React.FC = () => {
 
     console.log('[logout] Starting logout process', {
       userId: auth?.id,
+      email: auth?.email,
       reason: opts?.reason,
       broadcast,
       skipEmit
     });
 
     try {
-      // FIX: Stop activity polling FIRST to prevent any more updates
       if (activityPollRef.current) {
         console.log('[logout] Stopping activity poll');
         clearInterval(activityPollRef.current);
@@ -371,29 +371,24 @@ const App: React.FC = () => {
       const sock = socketRef.current;
       socketRef.current = null;
 
-      // Emit logout event to server
       if (!skipEmit && auth?.id && sock?.connected) {
         console.log('[logout] Emitting user_logout to server');
         sock.emit('user_logout', auth.id);
       }
 
-      // Disconnect socket
       if (sock) {
         console.log('[logout] Disconnecting socket');
         sock.removeAllListeners();
         sock.disconnect();
       }
 
-      // Clear all storage
       console.log('[logout] Clearing storage');
       utils.clearAllSessionData(auth);
 
-      // Clear presence immediately
       console.log('[logout] Clearing presence state');
       setRealtimeStatuses([]);
       realtimeStatusesRef.current = [];
 
-      // Reset all state
       console.log('[logout] Resetting state');
       setSocket(null);
       setUser(null);
@@ -403,7 +398,6 @@ const App: React.FC = () => {
       setLoginError('');
       setIsConnected(false);
 
-      // Broadcast to other tabs
       if (broadcast) {
         console.log('[logout] Broadcasting to other tabs');
         try {
@@ -431,12 +425,10 @@ const App: React.FC = () => {
     }
   }, [user]);
 
-  // Keep ref updated
   useEffect(() => {
     applyLogoutRef.current = applyLogout;
   }, [applyLogout]);
 
-  // FIX: Update login state when user changes
   useEffect(() => {
     isLoggedInRef.current = user !== null;
   }, [user]);
@@ -468,7 +460,8 @@ const App: React.FC = () => {
         }
       }
 
-      if (user?.id && e.key === utils.getSessionKey(user.id, false) && e.newValue !== e.oldValue) {
+      // FIX: Check email-based session key
+      if (user?.email && e.key === utils.getSessionKey(user.email) && e.newValue !== e.oldValue) {
         console.log('[storage] Session ID changed, another tab took over');
         applyLogoutRef.current({ auth: user, broadcast: false, reason: 'session_takeover', skipEmit: true });
       }
@@ -477,6 +470,32 @@ const App: React.FC = () => {
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [user]);
+
+  // ==================== DEBUG SESSION FUNCTION ====================
+  const debugSession = useCallback(async () => {
+    const auth = StorageManager.getAuth();
+    if (!auth?.email) {
+      console.log('[debug] No stored auth or email');
+      return;
+    }
+
+    const emailSessionId = StorageManager.getOrCreateSessionId(auth.email);
+    
+    console.log('[debug] Session IDs:', {
+      userId: auth.id,
+      email: auth.email,
+      emailSessionId,
+    });
+
+    try {
+      const serverIp = localStorage.getItem(STORAGE_KEYS.SERVER_IP) || 'https://server2-e3p9.onrender.com';
+      const res = await fetch(`${serverIp}/api/Office/debug_session?userId=${auth.id}`);
+      const data = await res.json();
+      console.log('[debug] Server state:', data);
+    } catch (e) {
+      console.error('[debug] Failed to fetch server state:', e);
+    }
+  }, []);
 
   // ==================== SOCKET CONNECTION ====================
   useEffect(() => {
@@ -526,13 +545,11 @@ const App: React.FC = () => {
     socketRef.current = newSocket;
     setSocket(newSocket);
 
-    // Clear stale UI presence on connection
     setRealtimeStatuses([]);
     realtimeStatusesRef.current = [];
 
     // ==================== ACTIVITY POLLING ====================
     const pollId = setInterval(async () => {
-      // FIX: Only poll if logged in
       if (!isLoggedInRef.current) {
         console.log('[activity] Skipping poll - not logged in');
         return;
@@ -660,15 +677,32 @@ const App: React.FC = () => {
       setIsConnected(true);
       setLoading(false);
 
+      // FIX: Don't auto-resume if this is a fresh login attempt
+      if (freshLoginRef.current) {
+        console.log('[socket] Fresh login in progress, skipping auto-resume');
+        return;
+      }
+
       try {
         const storedAuth = StorageManager.getAuth();
-        if (storedAuth?.id) {
-          const sessionId = storedAuth?.email
-            ? StorageManager.getOrCreateSessionId(storedAuth.email, true)
-            : StorageManager.getOrCreateSessionId(storedAuth.id, false);
+        
+        // Only resume if we have complete user data with email
+        if (storedAuth?.id && storedAuth?.email) {
+          // FIX: Always use email for session ID
+          const sessionId = StorageManager.getOrCreateSessionId(storedAuth.email);
 
-          console.log('[socket] Resuming session for user:', storedAuth.id);
-          newSocket.emit('auth_resume', { userId: storedAuth.id, sessionId });
+          console.log('[socket] Resuming session', {
+            userId: storedAuth.id,
+            email: storedAuth.email,
+            sessionId
+          });
+          
+          newSocket.emit('auth_resume', { 
+            userId: storedAuth.id, 
+            sessionId 
+          });
+        } else {
+          console.log('[socket] No stored auth or incomplete data, skipping resume');
         }
       } catch (e) {
         console.error('[socket] Failed to resume session:', e);
@@ -691,7 +725,6 @@ const App: React.FC = () => {
       setUsers(users);
       StorageManager.saveUsers(users);
 
-      // Only populate presence if non-empty from server
       if (Array.isArray(presence) && presence.length > 0) {
         setRealtimeStatuses(presence);
         realtimeStatusesRef.current = presence;
@@ -795,7 +828,6 @@ const App: React.FC = () => {
         }
       } catch (e) {}
 
-      // Remove user from presence immediately
       setRealtimeStatuses(prev => {
         const next = prev.filter(s => s.userId !== userId);
         realtimeStatusesRef.current = next;
@@ -815,7 +847,6 @@ const App: React.FC = () => {
       console.log('[socket] Force logout received');
       const currentUser = StorageManager.getAuth();
 
-      // Clear presence immediately
       setRealtimeStatuses([]);
       realtimeStatusesRef.current = [];
       setHasSynced(false);
@@ -836,30 +867,40 @@ const App: React.FC = () => {
       }
 
       console.log('[socket] Auth success:', authenticatedUser.id);
-      isLoggedInRef.current = true; // FIX: Mark as logged in
+      
+      // FIX: Clear fresh login flag AFTER successful auth
+      freshLoginRef.current = false;
+      isLoggedInRef.current = true;
+      
       setLoginError('');
       setUser(authenticatedUser);
       setView('dashboard');
       StorageManager.saveAuth(authenticatedUser);
+
+      // Debug session after login
+      setTimeout(() => {
+        debugSession();
+      }, 1000);
     });
 
     newSocket.on('auth_failure', ({ message }) => {
       console.log('[socket] Auth failure:', message);
-      isLoggedInRef.current = false; // FIX: Mark as logged out
+      
+      // FIX: Clear fresh login flag on auth failure
+      freshLoginRef.current = false;
+      isLoggedInRef.current = false;
+      
       setLoginError(message || 'Authentication failed.');
       setLoading(false);
 
-      // Clear stale presence on auth failure
       setRealtimeStatuses([]);
       realtimeStatusesRef.current = [];
       setHasSynced(false);
     });
 
-    // Cleanup
     return () => {
       console.log('[socket] Cleaning up connection');
       
-      // Stop activity polling
       if (activityPollRef.current) {
         clearInterval(activityPollRef.current);
         activityPollRef.current = null;
@@ -871,7 +912,7 @@ const App: React.FC = () => {
         socketRef.current = null;
       }
     };
-  }, []);
+  }, [debugSession]);
 
   // ==================== VIEW MANAGEMENT ====================
   useEffect(() => {
@@ -929,6 +970,11 @@ const App: React.FC = () => {
       const storedAuth = StorageManager.getAuth();
       const incomingEmail = String(credentials?.email || '').toLowerCase().trim();
 
+      if (!incomingEmail) {
+        setLoginError('Email is required');
+        return;
+      }
+
       if (storedAuth && incomingEmail) {
         const existingEmail = String(storedAuth?.email || '').toLowerCase().trim();
 
@@ -941,8 +987,12 @@ const App: React.FC = () => {
       console.error('[login] Error checking existing auth:', e);
     }
 
-    const sessionId = StorageManager.getOrCreateSessionId(credentials?.email, true);
-    console.log('[login] Attempting login');
+    // FIX: Set fresh login flag and always use email for session ID
+    freshLoginRef.current = true;
+    const email = String(credentials?.email || '').toLowerCase().trim();
+    const sessionId = StorageManager.getOrCreateSessionId(email);
+    
+    console.log('[login] Attempting login', { email, sessionId });
     socket?.emit('auth_login', { ...credentials, sessionId });
   }, [isConnected, socket]);
 
