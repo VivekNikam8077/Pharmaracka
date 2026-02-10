@@ -1,10 +1,8 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Socket } from 'socket.io-client';
 import { OfficeStatus, StatusLogEntry, User, RealtimeStatus, AppSettings } from '../types';
 import { getStatusConfig } from '../constants';
-import { 
-  History, 
+import {
   Clock,
   Zap,
   ClipboardCheck,
@@ -12,8 +10,8 @@ import {
   Coffee
 } from 'lucide-react';
 
-interface DashboardProps { 
-  user: User; 
+interface DashboardProps {
+  user: User;
   settings: AppSettings;
   realtimeStatuses: RealtimeStatus[];
   setRealtimeStatuses: (statuses: RealtimeStatus[] | ((prev: RealtimeStatus[]) => RealtimeStatus[])) => void;
@@ -35,21 +33,35 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
     return realtimeStatuses.find(s => s.userId === user.id);
   }, [realtimeStatuses, user.id]);
 
+  // Helper: compute IST start-of-day ms
+  const getISTDayStartMs = (nowMs: number): number => {
+    const dayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(nowMs));
+    return new Date(`${dayStr}T00:00:00+05:30`).getTime();
+  };
+
   // Sync state with server data
   useEffect(() => {
     if (myRealtimeData) {
       setCurrentStatus(myRealtimeData.status);
 
       const nowMs = Date.now() + serverOffsetMs;
-      const todayStartMs = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs))}T00:00:00+05:30`).getTime();
-      
-      // Calculate timer from the server's update timestamp
+      const todayStartMs = getISTDayStartMs(nowMs);
+
       const serverTimestamp = new Date(myRealtimeData.lastUpdate).getTime();
+      // FIX: guard against invalid timestamps before computing elapsed
+      if (!Number.isFinite(serverTimestamp)) {
+        setTimer(0);
+        return;
+      }
+
       const elapsed = Math.floor((nowMs - Math.max(serverTimestamp, todayStartMs)) / 1000);
       setTimer(elapsed > 0 ? elapsed : 0);
 
-      // Make server presence authoritative for the latest segment.
-      // This fixes cases where an Admin overrides the user's status but local timers/history keep running.
       setHistory(prev => {
         const nextTs = new Date(myRealtimeData.lastUpdate);
         if (!Number.isFinite(nextTs.getTime())) return prev;
@@ -81,8 +93,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
 
         const withServer = [newEntry, ...prev];
 
-        // If status spans across IST midnight, create a synthetic entry at day start
-        // so timers/log durations reset for the new day.
         const latestAfter = withServer[0];
         const latestAfterTs = latestAfter?.timestamp instanceof Date
           ? latestAfter.timestamp.getTime()
@@ -125,7 +135,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
       setCurrentStatus(lastKnownStatus);
     }
 
-    // Inform server we are online if not already in presence
     if (!myRealtimeData && socket) {
       socket.emit('status_change', {
         userId: user.id,
@@ -142,6 +151,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
 
     const onHistoryUpdate = (rows: any[]) => {
       try {
+        const nowMs = Date.now() + serverOffsetMs;
+        const todayStartMs = getISTDayStartMs(nowMs);
+
         let next = (Array.isArray(rows) ? rows : [])
           .filter((r) => String(r?.userId) === String(user.id))
           .map((r) => ({
@@ -153,8 +165,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
           .filter((e) => Number.isFinite(e.timestamp.getTime()));
 
         if (next.length > 0 && myRealtimeData) {
-          const nowMs = Date.now() + serverOffsetMs;
-          const todayStartMs = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs))}T00:00:00+05:30`).getTime();
           const latestTs = next[0].timestamp.getTime();
           if (Number.isFinite(latestTs) && latestTs < todayStartMs && String(myRealtimeData.status) !== 'Offline') {
             const synthetic: StatusLogEntry = {
@@ -183,38 +193,47 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
     }
   }, [history]);
 
+  // FIX: guarded timer — early return when myRealtimeData is absent to avoid stale computation
   useEffect(() => {
     const interval = setInterval(() => {
       const nowMs = Date.now() + serverOffsetMs;
       setIndiaTime(new Date(nowMs));
-      if (myRealtimeData) {
-        const todayStartMs = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs))}T00:00:00+05:30`).getTime();
-        const serverTimestamp = new Date(myRealtimeData.lastUpdate).getTime();
-        const elapsed = Math.floor((nowMs - Math.max(serverTimestamp, todayStartMs)) / 1000);
-        setTimer(elapsed > 0 ? elapsed : 0);
-      } else {
+
+      // FIX: if no realtime data, reset timer and exit early — no stale values on re-login
+      if (!myRealtimeData) {
         setTimer(0);
+        return;
       }
+
+      const todayStartMs = getISTDayStartMs(nowMs);
+      const serverTimestamp = new Date(myRealtimeData.lastUpdate).getTime();
+
+      // FIX: guard invalid timestamp
+      if (!Number.isFinite(serverTimestamp)) {
+        setTimer(0);
+        return;
+      }
+
+      const elapsed = Math.floor((nowMs - Math.max(serverTimestamp, todayStartMs)) / 1000);
+      setTimer(elapsed > 0 ? elapsed : 0);
     }, 1000);
     return () => clearInterval(interval);
   }, [serverOffsetMs, myRealtimeData]);
 
   const changeStatus = (newStatus: string) => {
     if (newStatus === currentStatus) return;
-    
+
     const statusData = {
       userId: user.id,
       userName: user.name,
       role: user.role,
       status: newStatus as OfficeStatus
     };
-    
-    // Broadcast to server
+
     if (socket) {
       socket.emit('status_change', statusData);
     }
 
-    // Local history log update
     const newEntry: StatusLogEntry = {
       id: Math.random().toString(36).substr(2, 9),
       userId: user.id,
@@ -222,8 +241,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
       timestamp: new Date()
     };
     setHistory(prev => [newEntry, ...prev]);
-    
-    // Timer will reset via the myRealtimeData useEffect when the server responds
   };
 
   const stats = useMemo(() => {
@@ -231,7 +248,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
     if (history.length === 0) return totals;
 
     const nowMs = Date.now() + serverOffsetMs;
-    const todayStartMs = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs))}T00:00:00+05:30`).getTime();
+    const todayStartMs = getISTDayStartMs(nowMs);
     const todayEndMs = todayStartMs + 86400000;
 
     for (let i = 0; i < history.length; i++) {
@@ -240,8 +257,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
 
       let endTime = i === 0 ? startTime : history[i - 1].timestamp.getTime();
       if (i === 0 && myRealtimeData) {
-        // Treat presence as authoritative for the currently running segment.
-        // Do NOT require timestamp equality (can drift due to network/DB precision).
         const sameStatus = String(myRealtimeData.status) === String(current.status);
         if (sameStatus) endTime = nowMs;
       }
@@ -257,7 +272,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
   const todayHistory = useMemo(() => {
     if (!history || history.length === 0) return [];
     const nowMs = Date.now() + serverOffsetMs;
-    const todayStartMs = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs))}T00:00:00+05:30`).getTime();
+    const todayStartMs = getISTDayStartMs(nowMs);
     const todayEndMs = todayStartMs + 86400000;
     return history.filter((h) => {
       const ts = h.timestamp.getTime();
@@ -297,7 +312,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
                 <span className="text-xs">IST: {formatIST(indiaTime)}</span>
               </div>
             </div>
-
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -308,9 +322,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, settings, realtimeStatuses,
                 <button
                   key={status}
                   onClick={() => changeStatus(status)}
-                  className={`flex flex-col items-center justify-center p-5 rounded-2xl border transition-all duration-300 group ${
-                    isActive ? `${config.bg} border-indigo-200 dark:border-indigo-800 shadow-xl scale-[1.03]` : 'border-slate-100 dark:border-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900'
-                  }`}
+                  className={`flex flex-col items-center justify-center p-5 rounded-2xl border transition-all duration-300 group ${isActive
+                    ? `${config.bg} border-indigo-200 dark:border-indigo-800 shadow-xl scale-[1.03]`
+                    : 'border-slate-100 dark:border-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900'
+                    }`}
                 >
                   <div className={`p-3 rounded-xl mb-3 transition-transform group-hover:scale-110 ${isActive ? config.color : 'text-slate-400 dark:text-slate-600'}`}>
                     {config.icon}
