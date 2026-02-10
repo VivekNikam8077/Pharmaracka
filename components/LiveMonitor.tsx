@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
-import { User, OfficeStatus, RealtimeStatus, UserRole, AppSettings } from '../types';
+import { User, OfficeStatus, RealtimeStatus, AppSettings } from '../types';
 import { getStatusConfig } from '../constants';
-import { RefreshCcw, Activity, UserCog, Clock, CheckCircle2 } from 'lucide-react';
+import { RefreshCcw, Activity, UserCog, Clock } from 'lucide-react';
 
 interface LiveMonitorProps {
   user: User;
@@ -16,10 +15,63 @@ interface LiveMonitorProps {
   serverOffsetMs?: number;
 }
 
-const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRealtimeStatuses, users = [], settings, socket, hasSynced, serverOffsetMs = 0 }) => {
+const LiveMonitor: React.FC<LiveMonitorProps> = ({
+  user,
+  realtimeStatuses,
+  setRealtimeStatuses,
+  users = [],
+  settings,
+  socket,
+  hasSynced,
+  serverOffsetMs = 0,
+}) => {
   const refreshData = () => {};
 
   const [now, setNow] = useState(() => Date.now() + serverOffsetMs);
+
+  const toISTDateString = (ms: number) => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date(ms));
+    } catch (e) {
+      return new Date(ms).toISOString().slice(0, 10);
+    }
+  };
+
+  const getIdleInfo = (userId: string, fallbackStartMs?: number) => {
+    try {
+      const raw = localStorage.getItem('officely_idle_track_v1');
+      if (!raw) return { idleStartMs: null as number | null, idleTotalMs: 0 };
+      const parsed = JSON.parse(raw);
+      const dayKey = toISTDateString(now);
+      const dayBucket = parsed?.[dayKey];
+      const row = dayBucket?.[userId];
+      const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs)) ? row.idleStartMs : null;
+      const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs)) ? row.idleTotalMs : 0;
+
+      if (!idleStartMs && typeof fallbackStartMs === 'number' && Number.isFinite(fallbackStartMs)) {
+        try {
+          const store = parsed && typeof parsed === 'object' ? parsed : {};
+          const bucket = store?.[dayKey] && typeof store[dayKey] === 'object' ? store[dayKey] : {};
+          bucket[userId] = {
+            ...(bucket[userId] || {}),
+            idleStartMs: fallbackStartMs,
+            idleTotalMs,
+          };
+          store[dayKey] = bucket;
+          localStorage.setItem('officely_idle_track_v1', JSON.stringify(store));
+        } catch (err) {}
+        return { idleStartMs: fallbackStartMs, idleTotalMs };
+      }
+      return { idleStartMs, idleTotalMs };
+    } catch (e) {
+      return { idleStartMs: null as number | null, idleTotalMs: 0 };
+    }
+  };
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now() + serverOffsetMs), 1000);
@@ -36,6 +88,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
     return `${secs}s`;
   };
 
+  // Register self in presence on mount
   useEffect(() => {
     if (!hasSynced) return;
     const self = realtimeStatuses.find((r) => r.userId === user.id);
@@ -77,19 +130,19 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
       activity: targetUserId === user.id ? 1 : undefined,
     } as RealtimeStatus;
 
-    // Emit to socket server
     if (socket) {
       socket.emit('status_change', statusData);
     }
 
-    // Update local state immediately for snappy UI
+    // Optimistic update
     setRealtimeStatuses(prev => {
       const filtered = prev.filter(s => s.userId !== targetUserId);
       return [...filtered, statusData];
     });
   };
 
-  const visibleUsers = realtimeStatuses;
+  // Show all users except self on the monitor list
+  const visibleUsers = realtimeStatuses.filter((r) => r.userId !== user.id);
 
   const getDisplayName = (u: RealtimeStatus) => {
     const fromUsers = users.find((x) => x.id === u.userId);
@@ -111,7 +164,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Single list of currently active presence</p>
             </div>
           </div>
-          <button onClick={refreshData} className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-xl text-slate-500 dark:text-slate-400 transition-all text-xs font-black uppercase shadow-sm">
+          <button
+            onClick={refreshData}
+            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-xl text-slate-500 dark:text-slate-400 transition-all text-xs font-black uppercase shadow-sm"
+          >
             <RefreshCcw className="w-3 h-3" /> Refresh
           </button>
         </div>
@@ -141,16 +197,34 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ user, realtimeStatuses, setRe
                   : activity === 0
                     ? 'bg-red-500'
                     : 'bg-slate-400';
+
+                const shouldShowIdle = activity === 0 && u.status === OfficeStatus.AVAILABLE;
+                const idleInfo = shouldShowIdle
+                  ? getIdleInfo(u.userId, now)
+                  : { idleStartMs: null as number | null, idleTotalMs: 0 };
+                const idleElapsedSec = (shouldShowIdle && typeof idleInfo.idleStartMs === 'number')
+                  ? Math.max(0, Math.floor((now - idleInfo.idleStartMs) / 1000))
+                  : 0;
+
                 return (
                   <div key={u.userId} className="px-6 py-4 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-4 min-w-0">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-white ${config.bg || 'bg-slate-700'}`}>
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${config.bg || 'bg-slate-700'} text-slate-900`}>
                         {displayName?.charAt(0).toUpperCase() || 'U'}
                       </div>
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className={`w-2.5 h-2.5 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-900`} title={activity === 1 ? 'Active' : activity === 0 ? 'Idle' : 'Offline'} />
+                          <span
+                            className={`w-2.5 h-2.5 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-900`}
+                            title={activity === 1 ? 'Active' : activity === 0 ? 'Idle' : 'Offline'}
+                          />
                           <p className="text-sm font-black text-slate-900 dark:text-white truncate">{displayName || u.userId}</p>
+
+                          {shouldShowIdle && (
+                            <span className="ml-2 px-2 py-1 rounded-lg bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300 text-[10px] font-black uppercase tracking-widest flex-shrink-0">
+                              Idle {formatElapsedTime(idleElapsedSec)}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
