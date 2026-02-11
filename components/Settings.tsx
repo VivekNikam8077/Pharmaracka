@@ -70,7 +70,7 @@ const Settings: React.FC<SettingsProps> = ({ settings, setSettings, users, socke
         </div>
         <div>
           <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">System Control Panel</h2>
-          <p className="text-slate-500 dark:text-slate-400 font-medium italic">Configure core identity and operational parameters.</p>
+          <p className="text-slate-500 dark:text-slate-400 font-medium italic">Configure branding, monitoring rules, and system behavior.</p>
         </div>
       </div>
 
