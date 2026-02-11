@@ -12,6 +12,7 @@ import {
   Filter,
   FileText,
   Coffee,
+  Palmtree,
 } from 'lucide-react';
 
 interface AnalyticsProps {
@@ -49,6 +50,18 @@ const toDateStr = (d: Date): string => {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+};
+
+// Check if a day is a holiday/not available (no login)
+const isHoliday = (loginTime?: string, logoutTime?: string): boolean => {
+  if (!loginTime || !logoutTime) return true;
+  // Check if both are "00:00" or empty
+  const login = loginTime.trim();
+  const logout = logoutTime.trim();
+  if (!login || !logout) return true;
+  if (login === '00:00' && logout === '00:00') return true;
+  if (login === '00:00:00' && logout === '00:00:00') return true;
+  return false;
 };
 
 // FIX: Get idle minutes accurately — close any open idle session if still running
@@ -406,7 +419,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
     const rows = filteredData.map(d => {
       const idle = getIdleMinutes(d.userId, d.date);
       const actual = Math.max(0, (d.productiveMinutes || 0) - idle);
-      return [getUserName(d.userId), d.date, d.loginTime, d.logoutTime, formatHnM(idle), formatHnM(actual), formatHnM(d.lunchMinutes), formatHnM(d.snacksMinutes), formatHnM(d.refreshmentMinutes), formatHnM(d.feedbackMinutes), formatHnM(d.crossUtilMinutes), formatHnM(d.totalMinutes)];
+      const login = isHoliday(d.loginTime, d.logoutTime) ? 'Holiday' : d.loginTime;
+      const logout = isHoliday(d.loginTime, d.logoutTime) ? 'Holiday' : d.logoutTime;
+      return [getUserName(d.userId), d.date, login, logout, formatHnM(idle), formatHnM(actual), formatHnM(d.lunchMinutes), formatHnM(d.snacksMinutes), formatHnM(d.refreshmentMinutes), formatHnM(d.feedbackMinutes), formatHnM(d.crossUtilMinutes), formatHnM(d.totalMinutes)];
     });
     const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: `Activity_${selectedUserId}_${range}.csv` });
@@ -439,8 +454,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
               <Filter className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight uppercase">Archive Engine</h2>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest italic">Temporal dataset processing</p>
+              <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight uppercase">Performance & Break Analysis</h2>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest italic">Employee activity monitoring</p>
             </div>
           </div>
           {isPrivileged && (
@@ -634,19 +649,46 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
                     .sort((a, b) => b.date.localeCompare(a.date))
                     .map((d, idx) => {
                       const breakMins = (d.lunchMinutes || 0) + (d.snacksMinutes || 0) + (d.refreshmentMinutes || 0);
+                      const holiday = isHoliday(d.loginTime, d.logoutTime);
+                      
                       return (
-                        <tr key={`${d.userId}-${d.date}-${idx}`} className="hover:bg-slate-50/40 dark:hover:bg-slate-900/30 transition-colors">
+                        <tr key={`${d.userId}-${d.date}-${idx}`} className={`transition-colors ${holiday ? 'bg-amber-50/30 dark:bg-amber-900/10' : 'hover:bg-slate-50/40 dark:hover:bg-slate-900/30'}`}>
                           {selectedUserId === 'all' && (
                             <td className="px-8 py-5">
                               <span className="text-[10px] font-black text-slate-700 dark:text-slate-200 uppercase tracking-widest">{getUserName(d.userId)}</span>
                             </td>
                           )}
-                          <td className="px-8 py-5"><span className="text-xs font-black text-slate-800 dark:text-white">{d.date}</span></td>
-                          <td className="px-8 py-5"><span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">{d.loginTime || '—'}</span></td>
-                          <td className="px-8 py-5"><span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">{d.logoutTime || '—'}</span></td>
-                          <td className="px-8 py-5"><span className="text-xs font-black text-emerald-600">{formatHnM(d.productiveMinutes || 0)}</span></td>
-                          <td className="px-8 py-5"><span className="text-xs font-black text-rose-500">{formatHnM(breakMins)}</span></td>
-                          <td className="px-8 py-5"><span className="text-xs font-black text-slate-800 dark:text-white">{formatHnM(d.totalMinutes || 0)}</span></td>
+                          <td className="px-8 py-5">
+                            <span className="text-xs font-black text-slate-800 dark:text-white">{d.date}</span>
+                          </td>
+                          {holiday ? (
+                            <>
+                              <td className="px-8 py-5" colSpan={5}>
+                                <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+                                  <Palmtree className="w-4 h-4" />
+                                  <span className="text-xs font-black uppercase tracking-widest">Holiday / Not Available</span>
+                                </div>
+                              </td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="px-8 py-5">
+                                <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">{d.loginTime || '—'}</span>
+                              </td>
+                              <td className="px-8 py-5">
+                                <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">{d.logoutTime || '—'}</span>
+                              </td>
+                              <td className="px-8 py-5">
+                                <span className="text-xs font-black text-emerald-600">{formatHnM(d.productiveMinutes || 0)}</span>
+                              </td>
+                              <td className="px-8 py-5">
+                                <span className="text-xs font-black text-rose-500">{formatHnM(breakMins)}</span>
+                              </td>
+                              <td className="px-8 py-5">
+                                <span className="text-xs font-black text-slate-800 dark:text-white">{formatHnM(d.totalMinutes || 0)}</span>
+                              </td>
+                            </>
+                          )}
                         </tr>
                       );
                     })
