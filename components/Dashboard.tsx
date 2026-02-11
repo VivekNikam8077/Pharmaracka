@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { User, AppSettings, RealtimeStatus, OfficeStatus } from '../types';
+import { User, AppSettings, RealtimeStatus, OfficeStatus, DaySummary } from '../types';
 import { Socket } from 'socket.io-client';
 import { 
   Clock, 
@@ -24,6 +24,7 @@ interface DashboardProps {
   socket: Socket | null;
   hasSynced: boolean;
   serverOffsetMs: number;
+  performanceHistory?: DaySummary[]; // Server data
 }
 
 const STORAGE_KEY_PREFIX = 'officely_session_';
@@ -37,7 +38,8 @@ const Dashboard: React.FC<DashboardProps> = ({
   setRealtimeStatuses,
   socket,
   hasSynced,
-  serverOffsetMs
+  serverOffsetMs,
+  performanceHistory = []
 }) => {
   const [currentStatus, setCurrentStatus] = useState<OfficeStatus>(OfficeStatus.AVAILABLE);
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
@@ -77,21 +79,47 @@ const Dashboard: React.FC<DashboardProps> = ({
   // Initialize session from storage or create new
   useEffect(() => {
     const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
+    const now = Date.now() + serverOffsetMs;
+    const today = toISTDateString(new Date(now));
+    const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
+    
     const stored = localStorage.getItem(sessionKey);
+    
+    // Check if we have history for today
+    const existingHistory = localStorage.getItem(historyKey);
+    let hasHistory = false;
+    
+    try {
+      if (existingHistory) {
+        const parsed = JSON.parse(existingHistory);
+        hasHistory = Array.isArray(parsed) && parsed.length > 0;
+        console.log('[Dashboard] Found existing history for today:', parsed.length, 'entries');
+      }
+    } catch (e) {
+      console.error('[Dashboard] Failed to parse existing history:', e);
+    }
     
     if (stored) {
       try {
         const data = JSON.parse(stored);
-        const now = Date.now() + serverOffsetMs;
-        const today = toISTDateString(new Date(now));
         
         if (data.date === today && data.startTime) {
+          // Same day, restore session
           setSessionStartTime(data.startTime);
           setCurrentStatus(data.status || OfficeStatus.AVAILABLE);
           statusChangeTimeRef.current = data.statusChangeTime || data.startTime;
           console.log('[Dashboard] Restored session:', data);
+          
+          // Ensure history exists for today
+          if (!hasHistory) {
+            console.log('[Dashboard] Session exists but no history, initializing history');
+            localStorage.setItem(historyKey, JSON.stringify([
+              { status: data.status || OfficeStatus.AVAILABLE, timestamp: data.startTime }
+            ]));
+          }
         } else {
           // New day, start fresh
+          console.log('[Dashboard] New day detected, starting fresh session');
           const newStartTime = now;
           setSessionStartTime(newStartTime);
           setCurrentStatus(OfficeStatus.AVAILABLE);
@@ -105,19 +133,18 @@ const Dashboard: React.FC<DashboardProps> = ({
           }));
           
           // Initialize status history for new day
-          const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
           localStorage.setItem(historyKey, JSON.stringify([
             { status: OfficeStatus.AVAILABLE, timestamp: newStartTime }
           ]));
-          console.log('[Dashboard] Started new day session');
+          console.log('[Dashboard] Initialized new day with Available status');
         }
       } catch (e) {
         console.error('[Dashboard] Failed to restore session:', e);
       }
     } else {
-      // First time login today
-      const newStartTime = Date.now() + serverOffsetMs;
-      const today = toISTDateString(new Date(newStartTime));
+      // First time login ever or after logout
+      console.log('[Dashboard] No existing session, creating new');
+      const newStartTime = now;
       
       setSessionStartTime(newStartTime);
       setCurrentStatus(OfficeStatus.AVAILABLE);
@@ -131,12 +158,15 @@ const Dashboard: React.FC<DashboardProps> = ({
       }));
       
       // Initialize status history
-      const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
       localStorage.setItem(historyKey, JSON.stringify([
         { status: OfficeStatus.AVAILABLE, timestamp: newStartTime }
       ]));
-      console.log('[Dashboard] Created new session');
+      console.log('[Dashboard] Created new session with initial Available status');
     }
+    
+    // Final verification
+    const finalHistory = localStorage.getItem(historyKey);
+    console.log('[Dashboard] Final history check:', finalHistory ? JSON.parse(finalHistory) : 'NONE');
   }, [user.id, serverOffsetMs]);
 
   // Save session data when status changes
@@ -175,102 +205,200 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
   }, [sessionStartTime, serverOffsetMs]);
 
-  // Calculate today's stats from status history
+  // Calculate today's stats from SERVER DATA + real-time local changes
   useEffect(() => {
     if (!sessionStartTime) return;
 
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
-
-    // Get idle data
-    let totalIdleMs = 0;
-    try {
-      const idleStore = JSON.parse(localStorage.getItem(IDLE_TRACK_KEY) || '{}');
-      const dayBucket = idleStore[today] || {};
-      const userIdle = dayBucket[user.id] || {};
-      
-      let accumulated = userIdle.idleTotalMs || 0;
-      if (typeof userIdle.idleStartMs === 'number') {
-        const delta = Math.max(0, now - userIdle.idleStartMs);
-        accumulated += delta;
-      }
-      
-      totalIdleMs = accumulated;
-    } catch (e) {
-      console.error('[Dashboard] Failed to get idle data:', e);
-    }
-
-    // Get status history for today
     const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
-    let statusHistory: Array<{ status: OfficeStatus; timestamp: number }> = [];
+
+    // Force re-calculate stats every second
+    const calculateStats = () => {
+      const currentTime = Date.now() + serverOffsetMs;
+      const todayDate = toISTDateString(new Date(currentTime));
+      
+      // ========== PRIMARY SOURCE: SERVER DATA ==========
+      // Get today's summary from server performance history
+      const serverTodayData = performanceHistory.find(
+        (entry) => entry.userId === user.id && entry.date === todayDate
+      );
+
+      // Initialize stats with SERVER data if available
+      let stats = {
+        productiveMinutes: serverTodayData?.productiveMinutes || 0,
+        lunchMinutes: serverTodayData?.lunchMinutes || 0,
+        snacksMinutes: serverTodayData?.snacksMinutes || 0,
+        refreshmentMinutes: serverTodayData?.refreshmentMinutes || 0,
+        feedbackMinutes: serverTodayData?.feedbackMinutes || 0,
+        crossUtilMinutes: serverTodayData?.crossUtilMinutes || 0,
+        totalMinutes: 0,
+        idleMinutes: 0,
+      };
+
+      console.log('[Dashboard] Server stats for today:', serverTodayData || 'None');
+
+      // ========== SUPPLEMENT: REAL-TIME LOCAL TRACKING ==========
+      // If we have local status changes AFTER the server's last update, add them
+      let localHistoryUsed = false;
+      
+      try {
+        const stored = localStorage.getItem(historyKey);
+        if (stored) {
+          const statusHistory: Array<{ status: OfficeStatus; timestamp: number }> = JSON.parse(stored);
+          
+          // Find when server data ends (use logout time or current realtime status timestamp)
+          let serverEndTime = sessionStartTime;
+          if (serverTodayData?.logoutTime) {
+            const [hours, minutes] = serverTodayData.logoutTime.split(':');
+            const logoutDate = new Date(todayDate);
+            logoutDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+            serverEndTime = logoutDate.getTime();
+          }
+
+          // Process only status changes AFTER server's last update
+          const recentChanges = statusHistory.filter(entry => entry.timestamp > serverEndTime);
+          
+          if (recentChanges.length > 0) {
+            localHistoryUsed = true;
+            console.log('[Dashboard] Supplementing with', recentChanges.length, 'local changes after server update');
+            
+            const addMinutesToStatus = (status: OfficeStatus, minutes: number) => {
+              if (minutes <= 0) return;
+              
+              switch (status) {
+                case OfficeStatus.AVAILABLE:
+                  stats.productiveMinutes += minutes;
+                  break;
+                case OfficeStatus.LUNCH:
+                  stats.lunchMinutes += minutes;
+                  break;
+                case OfficeStatus.SNACKS:
+                  stats.snacksMinutes += minutes;
+                  break;
+                case OfficeStatus.REFRESHMENT_BREAK:
+                  stats.refreshmentMinutes += minutes;
+                  break;
+                case OfficeStatus.QUALITY_FEEDBACK:
+                  stats.feedbackMinutes += minutes;
+                  break;
+                case OfficeStatus.CROSS_UTILIZATION:
+                  stats.crossUtilMinutes += minutes;
+                  break;
+              }
+            };
+
+            // Calculate time from recent local changes
+            for (let i = 0; i < recentChanges.length; i++) {
+              const current = recentChanges[i];
+              const next = recentChanges[i + 1];
+              
+              const startTime = current.timestamp;
+              const endTime = next ? next.timestamp : currentTime;
+              const duration = Math.floor((endTime - startTime) / 60000);
+              
+              console.log(`[Dashboard] Local: ${current.status} = ${duration} min`);
+              addMinutesToStatus(current.status, duration);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[Dashboard] Failed to process local history:', e);
+      }
+
+      // ========== FALLBACK: If NO server data and NO local history ==========
+      if (!serverTodayData && !localHistoryUsed) {
+        console.warn('[Dashboard] No server data, using full local calculation');
+        
+        // Use all local history from session start
+        try {
+          const stored = localStorage.getItem(historyKey);
+          if (stored) {
+            const statusHistory: Array<{ status: OfficeStatus; timestamp: number }> = JSON.parse(stored);
+            
+            const addMinutesToStatus = (status: OfficeStatus, minutes: number) => {
+              if (minutes <= 0) return;
+              
+              switch (status) {
+                case OfficeStatus.AVAILABLE:
+                  stats.productiveMinutes += minutes;
+                  break;
+                case OfficeStatus.LUNCH:
+                  stats.lunchMinutes += minutes;
+                  break;
+                case OfficeStatus.SNACKS:
+                  stats.snacksMinutes += minutes;
+                  break;
+                case OfficeStatus.REFRESHMENT_BREAK:
+                  stats.refreshmentMinutes += minutes;
+                  break;
+                case OfficeStatus.QUALITY_FEEDBACK:
+                  stats.feedbackMinutes += minutes;
+                  break;
+                case OfficeStatus.CROSS_UTILIZATION:
+                  stats.crossUtilMinutes += minutes;
+                  break;
+              }
+            };
+
+            for (let i = 0; i < statusHistory.length; i++) {
+              const current = statusHistory[i];
+              const next = statusHistory[i + 1];
+              
+              const startTime = current.timestamp;
+              const endTime = next ? next.timestamp : currentTime;
+              const duration = Math.floor((endTime - startTime) / 60000);
+              
+              addMinutesToStatus(current.status, duration);
+            }
+          } else {
+            // Absolute fallback: current session time with current status
+            const duration = Math.floor((currentTime - sessionStartTime) / 60000);
+            if (currentStatus === OfficeStatus.AVAILABLE) stats.productiveMinutes = duration;
+            else if (currentStatus === OfficeStatus.LUNCH) stats.lunchMinutes = duration;
+            else if (currentStatus === OfficeStatus.SNACKS) stats.snacksMinutes = duration;
+            else if (currentStatus === OfficeStatus.REFRESHMENT_BREAK) stats.refreshmentMinutes = duration;
+            else if (currentStatus === OfficeStatus.QUALITY_FEEDBACK) stats.feedbackMinutes = duration;
+            else if (currentStatus === OfficeStatus.CROSS_UTILIZATION) stats.crossUtilMinutes = duration;
+          }
+        } catch (e) {
+          console.error('[Dashboard] Fallback calculation failed:', e);
+        }
+      }
+
+      // Get idle data
+      try {
+        const idleStore = JSON.parse(localStorage.getItem(IDLE_TRACK_KEY) || '{}');
+        const dayBucket = idleStore[todayDate] || {};
+        const userIdle = dayBucket[user.id] || {};
+        
+        let totalIdleMs = userIdle.idleTotalMs || 0;
+        if (typeof userIdle.idleStartMs === 'number') {
+          const delta = Math.max(0, currentTime - userIdle.idleStartMs);
+          totalIdleMs += delta;
+        }
+        
+        stats.idleMinutes = Math.floor(totalIdleMs / 60000);
+      } catch (e) {
+        console.error('[Dashboard] Failed to get idle data:', e);
+      }
+
+      // Calculate total
+      stats.totalMinutes = stats.productiveMinutes + stats.lunchMinutes + stats.snacksMinutes +
+        stats.refreshmentMinutes + stats.feedbackMinutes + stats.crossUtilMinutes;
+
+      console.log('[Dashboard] Final calculated stats:', stats);
+      setTodayStats(stats);
+    };
+
+    // Calculate immediately
+    calculateStats();
     
-    try {
-      const stored = localStorage.getItem(historyKey);
-      if (stored) {
-        statusHistory = JSON.parse(stored);
-      }
-    } catch (e) {
-      console.error('[Dashboard] Failed to load status history:', e);
-    }
-
-    // Calculate time spent in each status
-    let stats = {
-      productiveMinutes: 0,
-      lunchMinutes: 0,
-      snacksMinutes: 0,
-      refreshmentMinutes: 0,
-      feedbackMinutes: 0,
-      crossUtilMinutes: 0,
-      totalMinutes: 0,
-      idleMinutes: Math.floor(totalIdleMs / 60000),
-    };
-
-    const addMinutesToStatus = (status: OfficeStatus, minutes: number) => {
-      switch (status) {
-        case OfficeStatus.AVAILABLE:
-          stats.productiveMinutes += minutes;
-          break;
-        case OfficeStatus.LUNCH:
-          stats.lunchMinutes += minutes;
-          break;
-        case OfficeStatus.SNACKS:
-          stats.snacksMinutes += minutes;
-          break;
-        case OfficeStatus.REFRESHMENT_BREAK:
-          stats.refreshmentMinutes += minutes;
-          break;
-        case OfficeStatus.QUALITY_FEEDBACK:
-          stats.feedbackMinutes += minutes;
-          break;
-        case OfficeStatus.CROSS_UTILIZATION:
-          stats.crossUtilMinutes += minutes;
-          break;
-      }
-    };
-
-    // Process status history
-    for (let i = 0; i < statusHistory.length; i++) {
-      const current = statusHistory[i];
-      const next = statusHistory[i + 1];
-      
-      const startTime = current.timestamp;
-      const endTime = next ? next.timestamp : now;
-      const duration = Math.floor((endTime - startTime) / 60000); // minutes
-      
-      addMinutesToStatus(current.status, duration);
-    }
-
-    // If no history exists, count from session start with current status
-    if (statusHistory.length === 0) {
-      const duration = Math.floor((now - sessionStartTime) / 60000);
-      addMinutesToStatus(currentStatus, duration);
-    }
-
-    stats.totalMinutes = stats.productiveMinutes + stats.lunchMinutes + stats.snacksMinutes +
-      stats.refreshmentMinutes + stats.feedbackMinutes + stats.crossUtilMinutes;
-
-    setTodayStats(stats);
-  }, [realtimeStatuses, user.id, sessionStartTime, currentStatus, serverOffsetMs]);
+    // Update every second to show live progress
+    const interval = setInterval(calculateStats, 1000);
+    
+    return () => clearInterval(interval);
+  }, [sessionStartTime, currentStatus, user.id, serverOffsetMs, performanceHistory]);
 
   // Handle status change
   const handleStatusChange = (newStatus: OfficeStatus) => {
@@ -279,7 +407,12 @@ const Dashboard: React.FC<DashboardProps> = ({
       return;
     }
 
-    console.log('[Dashboard] Changing status to:', newStatus);
+    if (newStatus === currentStatus) {
+      console.log('[Dashboard] Already in this status, ignoring');
+      return;
+    }
+
+    console.log('[Dashboard] Changing status from', currentStatus, 'to', newStatus);
     
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
@@ -289,62 +422,80 @@ const Dashboard: React.FC<DashboardProps> = ({
     try {
       let history: Array<{ status: OfficeStatus; timestamp: number }> = [];
       const stored = localStorage.getItem(historyKey);
+      
       if (stored) {
         history = JSON.parse(stored);
+        console.log('[Dashboard] Loaded existing history:', history.length, 'entries');
+      } else {
+        console.log('[Dashboard] No existing history, creating new');
       }
       
       // Add new status change
-      history.push({ status: newStatus, timestamp: now });
+      const newEntry = { status: newStatus, timestamp: now };
+      history.push(newEntry);
       
-      // Keep only today's data
+      // Save updated history
       localStorage.setItem(historyKey, JSON.stringify(history));
-      console.log('[Dashboard] Status history updated:', history);
+      console.log('[Dashboard] Saved status change:', newEntry);
+      console.log('[Dashboard] Full history now:', history);
+      
+      // Verify it was saved
+      const verification = localStorage.getItem(historyKey);
+      if (!verification) {
+        console.error('[Dashboard] FAILED to save history to localStorage!');
+      } else {
+        console.log('[Dashboard] Verified history saved successfully');
+      }
     } catch (e) {
       console.error('[Dashboard] Failed to save status history:', e);
     }
     
+    // Update current status
+    setCurrentStatus(newStatus);
+    statusChangeTimeRef.current = now;
+    
+    // Emit to server (after saving locally)
     socket.emit('status_change', {
       userId: user.id,
       status: newStatus
     });
-
-    setCurrentStatus(newStatus);
-    statusChangeTimeRef.current = now;
   };
 
-  // Sync status from realtime updates
+  // Sync status from realtime updates (from server/admin changes)
   useEffect(() => {
     const myStatus = realtimeStatuses.find(s => s.userId === user.id);
-    if (myStatus && myStatus.status !== currentStatus) {
-      const newStatus = myStatus.status;
-      console.log('[Dashboard] Status synced from server:', newStatus);
-      
-      const now = Date.now() + serverOffsetMs;
-      const today = toISTDateString(new Date(now));
-      
-      // Update status history
-      const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
-      try {
-        let history: Array<{ status: OfficeStatus; timestamp: number }> = [];
-        const stored = localStorage.getItem(historyKey);
-        if (stored) {
-          history = JSON.parse(stored);
-        }
-        
-        // Only add if it's different from the last entry
-        const lastEntry = history[history.length - 1];
-        if (!lastEntry || lastEntry.status !== newStatus) {
-          history.push({ status: newStatus, timestamp: now });
-          localStorage.setItem(historyKey, JSON.stringify(history));
-          console.log('[Dashboard] Status history synced:', history);
-        }
-      } catch (e) {
-        console.error('[Dashboard] Failed to sync status history:', e);
+    if (!myStatus || myStatus.status === currentStatus) return;
+    
+    const newStatus = myStatus.status;
+    console.log('[Dashboard] Status synced from server:', currentStatus, '->', newStatus);
+    
+    const now = Date.now() + serverOffsetMs;
+    const today = toISTDateString(new Date(now));
+    
+    // Update status history only if status actually changed
+    const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
+    try {
+      let history: Array<{ status: OfficeStatus; timestamp: number }> = [];
+      const stored = localStorage.getItem(historyKey);
+      if (stored) {
+        history = JSON.parse(stored);
       }
       
-      setCurrentStatus(newStatus);
-      statusChangeTimeRef.current = now;
+      // Only add if it's different from the last entry (avoid duplicates)
+      const lastEntry = history[history.length - 1];
+      if (!lastEntry || lastEntry.status !== newStatus) {
+        history.push({ status: newStatus, timestamp: now });
+        localStorage.setItem(historyKey, JSON.stringify(history));
+        console.log('[Dashboard] Synced status to history from server');
+      } else {
+        console.log('[Dashboard] Status already in history, skipping duplicate');
+      }
+    } catch (e) {
+      console.error('[Dashboard] Failed to sync status history:', e);
     }
+    
+    setCurrentStatus(newStatus);
+    statusChangeTimeRef.current = now;
   }, [realtimeStatuses, user.id, currentStatus, serverOffsetMs]);
 
   // Cleanup old status history (keep last 7 days only)
@@ -388,6 +539,73 @@ const Dashboard: React.FC<DashboardProps> = ({
     
     return () => clearInterval(cleanupInterval);
   }, [user.id, serverOffsetMs]);
+
+  // Debug helper - expose to console for troubleshooting
+  useEffect(() => {
+    (window as any).debugDashboard = () => {
+      const now = Date.now() + serverOffsetMs;
+      const today = toISTDateString(new Date(now));
+      const historyKey = `${STATUS_HISTORY_KEY}${user.id}_${today}`;
+      const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
+      
+      console.log('=== DASHBOARD DEBUG ===');
+      console.log('User ID:', user.id);
+      console.log('Current Status:', currentStatus);
+      console.log('Session Start:', sessionStartTime ? new Date(sessionStartTime).toLocaleString() : 'None');
+      console.log('Today:', today);
+      
+      // Server data
+      console.log('\n--- SERVER DATA ---');
+      const serverToday = performanceHistory.find(
+        (entry) => entry.userId === user.id && entry.date === today
+      );
+      if (serverToday) {
+        console.log('Server has data for today:');
+        console.log('  Login:', serverToday.loginTime);
+        console.log('  Logout:', serverToday.logoutTime);
+        console.log('  Productive:', serverToday.productiveMinutes, 'min');
+        console.log('  Lunch:', serverToday.lunchMinutes, 'min');
+        console.log('  Snacks:', serverToday.snacksMinutes, 'min');
+        console.log('  Break:', serverToday.refreshmentMinutes, 'min');
+        console.log('  Feedback:', serverToday.feedbackMinutes, 'min');
+        console.log('  Cross-Util:', serverToday.crossUtilMinutes, 'min');
+        console.log('  Total:', serverToday.totalMinutes, 'min');
+      } else {
+        console.log('No server data for today');
+      }
+      
+      // Local data
+      console.log('\n--- LOCAL DATA ---');
+      console.log('History Key:', historyKey);
+      const history = localStorage.getItem(historyKey);
+      if (history) {
+        try {
+          const parsed = JSON.parse(history);
+          console.log('Local Status History (' + parsed.length + ' entries):');
+          parsed.forEach((entry: any, i: number) => {
+            console.log(`  ${i}: ${entry.status} at ${new Date(entry.timestamp).toLocaleTimeString()}`);
+          });
+        } catch (e) {
+          console.error('Failed to parse history:', e);
+        }
+      } else {
+        console.log('No local history found');
+      }
+      
+      const session = localStorage.getItem(sessionKey);
+      console.log('Session Data:', session ? JSON.parse(session) : 'None');
+      
+      console.log('\n--- CALCULATED STATS ---');
+      console.log('Current Display:', todayStats);
+      console.log('======================');
+    };
+    
+    console.log('[Dashboard] Debug helper loaded. Type debugDashboard() in console to see all data sources.');
+    
+    return () => {
+      delete (window as any).debugDashboard;
+    };
+  }, [user.id, currentStatus, sessionStartTime, todayStats, serverOffsetMs, performanceHistory]);
 
   // Format time helper
   const formatTime = (ms: number): string => {
