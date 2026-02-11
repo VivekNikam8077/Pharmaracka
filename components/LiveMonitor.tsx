@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
 import { User, OfficeStatus, RealtimeStatus, AppSettings } from '../types';
 import { getStatusConfig } from '../constants';
-import { RefreshCcw, Activity, UserCog, Clock } from 'lucide-react';
+import { RefreshCcw, Activity, UserCog, Clock, Users } from 'lucide-react';
 
 interface LiveMonitorProps {
   user: User;
@@ -25,9 +25,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
   hasSynced,
   serverOffsetMs = 0,
 }) => {
-  const refreshData = () => {};
-
   const [now, setNow] = useState(() => Date.now() + serverOffsetMs);
+  const [hoveredUserId, setHoveredUserId] = useState<string | null>(null);
 
   const toISTDateString = (ms: number) => {
     try {
@@ -57,11 +56,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         try {
           const store = parsed && typeof parsed === 'object' ? parsed : {};
           const bucket = store?.[dayKey] && typeof store[dayKey] === 'object' ? store[dayKey] : {};
-          bucket[userId] = {
-            ...(bucket[userId] || {}),
-            idleStartMs: fallbackStartMs,
-            idleTotalMs,
-          };
+          bucket[userId] = { ...(bucket[userId] || {}), idleStartMs: fallbackStartMs, idleTotalMs };
           store[dayKey] = bucket;
           localStorage.setItem('officely_idle_track_v1', JSON.stringify(store));
         } catch (err) {}
@@ -88,7 +83,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     return `${secs}s`;
   };
 
-  // Register self in presence on mount
   useEffect(() => {
     if (!hasSynced) return;
     const self = realtimeStatuses.find((r) => r.userId === user.id);
@@ -134,14 +128,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
       socket.emit('status_change', statusData);
     }
 
-    // Optimistic update
     setRealtimeStatuses(prev => {
       const filtered = prev.filter(s => s.userId !== targetUserId);
       return [...filtered, statusData];
     });
   };
 
-  // Show all users except self on the monitor list
   const visibleUsers = realtimeStatuses.filter((r) => r.userId !== user.id);
 
   const getDisplayName = (u: RealtimeStatus) => {
@@ -152,34 +144,35 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
   };
 
   return (
-    <div className="space-y-10 animate-in fade-in duration-500">
-      <div className="bg-white dark:bg-slate-800 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm overflow-visible">
-        <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-600 rounded-lg text-white">
-              <Activity className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-lg font-black text-slate-800 dark:text-white tracking-tight">Active Users</h3>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Single list of currently active presence</p>
-            </div>
-          </div>
-          <button
-            onClick={refreshData}
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-xl text-slate-500 dark:text-slate-400 transition-all text-xs font-black uppercase shadow-sm"
-          >
-            <RefreshCcw className="w-3 h-3" /> Refresh
-          </button>
+    <div className="space-y-6 pb-24 animate-in fade-in duration-700" style={{ animationFillMode: 'backwards' }}>
+      {/* Header */}
+      <div className="flex items-center gap-4 mb-8">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/25">
+          <Activity className="w-7 h-7 text-white" strokeWidth={2.5} />
         </div>
+        <div className="flex-1">
+          <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Live Monitor</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Real-time user activity tracking</p>
+        </div>
+        <div className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-2xl border border-slate-200/50 dark:border-slate-700/50 shadow-lg">
+          <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" strokeWidth={2.5} />
+          <span className="text-sm font-semibold text-slate-900 dark:text-white">{visibleUsers.length}</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400">Active</span>
+        </div>
+      </div>
 
+      {/* Main Card */}
+      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 overflow-hidden">
         {visibleUsers.length === 0 ? (
-          <div className="h-64 border-2 border-dashed border-slate-100 dark:border-slate-800 rounded-[3rem] m-6 flex flex-col items-center justify-center text-slate-300 dark:text-slate-700 font-bold italic">
-            <Activity className="w-12 h-12 mb-4 opacity-10" />
-            <p className="text-sm">No users currently active on the network.</p>
-            <button onClick={refreshData} className="mt-4 text-indigo-500 hover:text-indigo-600 font-black uppercase text-[10px] tracking-[0.2em] underline underline-offset-8">Scan Again</button>
+          <div className="flex flex-col items-center justify-center py-24 px-6">
+            <div className="w-20 h-20 rounded-3xl bg-slate-100 dark:bg-slate-900 flex items-center justify-center mb-6">
+              <Activity className="w-10 h-10 text-slate-300 dark:text-slate-700" strokeWidth={2} />
+            </div>
+            <p className="text-lg font-semibold text-slate-400 dark:text-slate-600 mb-2">No Active Users</p>
+            <p className="text-sm text-slate-400 dark:text-slate-600">Users will appear here when they're online</p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-700">
+          <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
             {visibleUsers
               .slice()
               .sort((a, b) => getDisplayName(a).localeCompare(getDisplayName(b)))
@@ -195,71 +188,77 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
                 const activityDotClass = activity === 1
                   ? 'bg-emerald-500'
                   : activity === 0
-                    ? 'bg-red-500'
+                    ? 'bg-amber-500'
                     : 'bg-slate-400';
 
                 const shouldShowIdle = activity === 0 && u.status === OfficeStatus.AVAILABLE;
-                const idleInfo = shouldShowIdle
-                  ? getIdleInfo(u.userId, now)
-                  : { idleStartMs: null as number | null, idleTotalMs: 0 };
+                const idleInfo = shouldShowIdle ? getIdleInfo(u.userId, now) : { idleStartMs: null as number | null, idleTotalMs: 0 };
                 const idleElapsedSec = (shouldShowIdle && typeof idleInfo.idleStartMs === 'number')
                   ? Math.max(0, Math.floor((now - idleInfo.idleStartMs) / 1000))
                   : 0;
 
-                return (
-                  <div key={u.userId} className="px-6 py-4 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-4 min-w-0">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${config.bg || 'bg-slate-700'} text-slate-900`}>
-                        {displayName?.charAt(0).toUpperCase() || 'U'}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span
-                            className={`w-2.5 h-2.5 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-900`}
-                            title={activity === 1 ? 'Active' : activity === 0 ? 'Idle' : 'Offline'}
-                          />
-                          <p className="text-sm font-black text-slate-900 dark:text-white truncate">{displayName || u.userId}</p>
+                const isHovered = hoveredUserId === u.userId;
 
-                          {shouldShowIdle && (
-                            <span className="ml-2 px-2 py-1 rounded-lg bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300 text-[10px] font-black uppercase tracking-widest flex-shrink-0">
-                              Idle {formatElapsedTime(idleElapsedSec)}
-                            </span>
-                          )}
+                return (
+                  <div 
+                    key={u.userId} 
+                    className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200"
+                    onMouseEnter={() => setHoveredUserId(u.userId)}
+                    onMouseLeave={() => setHoveredUserId(null)}
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      {/* User Info */}
+                      <div className="flex items-center gap-4 min-w-0 flex-1">
+                        {/* Avatar */}
+                        <div className={`relative w-12 h-12 rounded-2xl flex items-center justify-center font-semibold text-white shadow-lg transition-all duration-200 ${config.bg || 'bg-gradient-to-br from-slate-600 to-slate-700'} ${isHovered ? 'scale-110' : 'scale-100'}`}>
+                          {displayName?.charAt(0).toUpperCase() || 'U'}
+                          {/* Activity Indicator */}
+                          <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-800 transition-all duration-200`} />
+                        </div>
+
+                        {/* Name & Status */}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">{displayName || u.userId}</p>
+                            {shouldShowIdle && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 text-xs font-semibold">
+                                Idle {formatElapsedTime(idleElapsedSec)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${config.bg} ${config.color} text-xs font-semibold`}>
+                              {React.cloneElement(config.icon as any, { className: 'w-3.5 h-3.5', strokeWidth: 2.5 })}
+                              {u.status}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                              <Clock className="w-3.5 h-3.5" strokeWidth={2.5} />
+                              {formatElapsedTime(Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000))}
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="flex items-center gap-4 flex-shrink-0">
-                      <div className={`hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl ${config.bg} ${config.color} ring-1 ring-current/10`}>
-                        {React.cloneElement(config.icon as any, { className: 'w-4 h-4' })}
-                        <span className="text-[10px] font-black uppercase tracking-widest">{u.status}</span>
-                      </div>
-
-                      <div className="hidden md:flex items-center gap-1.5 text-[10px] font-bold text-slate-400">
-                        <Clock className="w-3 h-3" />
-                        {new Date(u.lastUpdate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-
-                      <div className="hidden md:flex items-center gap-2 text-[10px] font-black text-slate-500 dark:text-slate-400">
-                        <span className="uppercase tracking-widest">Timer</span>
-                        <span className="font-mono">{formatElapsedTime(Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000))}</span>
-                      </div>
-
-                      <div className="relative group/menu">
-                        <button className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-600 text-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all">
-                          <UserCog className="w-4 h-4" /> Override
+                      {/* Actions */}
+                      <div className="relative flex-shrink-0">
+                        <button className={`flex items-center gap-2 px-4 py-2.5 bg-slate-50 dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-xl text-xs font-semibold transition-all duration-200 border border-slate-200/50 dark:border-slate-700/50 ${isHovered ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                          <UserCog className="w-4 h-4" strokeWidth={2.5} />
+                          Override
                         </button>
 
-                        <div className="absolute right-0 top-full mt-3 min-w-[220px] bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-[1.5rem] shadow-2xl opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all z-50 overflow-hidden py-2">
-                          {settings.availableStatuses.map((status) => (
-                            <button
-                              key={status}
-                              onClick={() => updateStatus(u.userId, status)}
-                              className="w-full text-left px-5 py-2.5 text-[10px] font-black text-slate-500 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors truncate"
-                            >
-                              {status}
-                            </button>
-                          ))}
+                        {/* Dropdown Menu */}
+                        <div className={`absolute right-0 top-full mt-2 min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden transition-all duration-200 ${isHovered ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible translate-y-2 pointer-events-none'}`}>
+                          <div className="py-2">
+                            {settings.availableStatuses.map((status) => (
+                              <button
+                                key={status}
+                                onClick={() => updateStatus(u.userId, status)}
+                                className="w-full text-left px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150"
+                              >
+                                {status}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     </div>
