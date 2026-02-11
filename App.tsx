@@ -322,6 +322,7 @@ const App: React.FC = () => {
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [loginError, setLoginError] = useState<string>('');
+  const [socketReconnectTrigger, setSocketReconnectTrigger] = useState(0);
 
   // ==================== REFS ====================
   const socketRef = useRef<Socket | null>(null);
@@ -334,7 +335,7 @@ const App: React.FC = () => {
   const applyLogoutRef = useRef<(opts?: any) => void>(() => {});
 
   // ==================== LOGOUT HANDLER ====================
-  const applyLogout = useCallback((opts?: {
+  const applyLogout = useCallback(async (opts?: {
     auth?: User | null;
     broadcast?: boolean;
     reason?: string;
@@ -369,11 +370,13 @@ const App: React.FC = () => {
       }
 
       const sock = socketRef.current;
-      socketRef.current = null;
-
+      
       if (!skipEmit && auth?.id && sock?.connected) {
         console.log('[logout] Emitting user_logout to server');
         sock.emit('user_logout', auth.id);
+        
+        // Give time for logout message to be sent
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       if (sock) {
@@ -381,6 +384,16 @@ const App: React.FC = () => {
         sock.removeAllListeners();
         sock.disconnect();
       }
+
+      // FIX: Clear socketRef AFTER disconnect completes to allow reconnection
+      setTimeout(() => {
+        socketRef.current = null;
+        setSocket(null);
+        console.log('[logout] Socket ref cleared, triggering reconnection');
+        
+        // Trigger socket recreation
+        setSocketReconnectTrigger(prev => prev + 1);
+      }, 300);
 
       console.log('[logout] Clearing storage');
       utils.clearAllSessionData(auth);
@@ -390,7 +403,7 @@ const App: React.FC = () => {
       realtimeStatusesRef.current = [];
 
       console.log('[logout] Resetting state');
-      setSocket(null);
+      // Don't set socket to null here - let the timeout handle it
       setUser(null);
       setView('dashboard');
       setPerformanceHistory([]);
@@ -912,7 +925,7 @@ const App: React.FC = () => {
         socketRef.current = null;
       }
     };
-  }, [debugSession]);
+  }, [debugSession, socketReconnectTrigger]);
 
   // ==================== VIEW MANAGEMENT ====================
   useEffect(() => {
