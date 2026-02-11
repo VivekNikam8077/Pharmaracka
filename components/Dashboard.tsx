@@ -1,1124 +1,471 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { User, DaySummary, OfficeStatus, StatusLogEntry, UserRole, RealtimeStatus, AppSettings } from './types';
-import Layout from './components/Layout';
-import Dashboard from './components/Dashboard';
-import Analytics from './components/Analytics';
-import Login from './components/Login';
-import Management from './components/Management';
-import LiveMonitor from './components/LiveMonitor';
-import Settings from './components/Settings';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Socket } from 'socket.io-client';
+import { OfficeStatus, StatusLogEntry, User, RealtimeStatus, AppSettings } from '../types';
+import { getStatusConfig } from '../constants';
+import {
+  Clock,
+  Zap,
+  ClipboardCheck,
+  Shuffle,
+  Coffee
+} from 'lucide-react';
 
-// ==================== CONSTANTS ====================
-const DEFAULT_SETTINGS: AppSettings = {
-  siteName: 'Pharmarack',
-  logoUrl: '',
-  loginBgUrl: 'https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&q=80',
-  darkMode: false,
-  availableStatuses: Object.values(OfficeStatus).filter(s => s !== OfficeStatus.LEAVE)
-};
-
-const STORAGE_KEYS = {
-  ARCHIVE: 'officely_archive_data',
-  ARCHIVE_VERSION: 'officely_archive_seed_version',
-  LAST_VIEW: 'officely_last_view',
-  SETTINGS: 'officely_settings',
-  LOGOUT_BROADCAST: 'officely_logout_broadcast',
-  IDLE_TRACK: 'officely_idle_track_v1',
-  AUTH: 'officely_auth',
-  USER: 'officely_user',
-  USERS: 'officely_users',
-  SERVER_IP: 'officely_server_ip',
-  SESSION_EMAIL_PREFIX: 'officely_session_email_',
-  // Dashboard per-user history cache prefix
-  DASHBOARD_SESSION_PREFIX: 'officely_session_',
-} as const;
-
-// ==================== UTILITY FUNCTIONS ====================
-const utils = {
-  toISTDateString: (d: Date): string => {
-    try {
-      return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(d);
-    } catch (e) {
-      return utils.toDateString(d);
-    }
-  },
-
-  toISTTimeHHMM: (d: Date): string => {
-    try {
-      return new Intl.DateTimeFormat('en-IN', {
-        timeZone: 'Asia/Kolkata',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }).format(d);
-    } catch (e) {
-      return d.toTimeString().slice(0, 5);
-    }
-  },
-
-  toDateString: (d: Date): string => {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  },
-
-  safeParseJson: (raw: string | null): any => {
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
-  },
-
-  istStartOfDayMs: (ms: number): number => {
-    const day = utils.toISTDateString(new Date(ms));
-    return new Date(`${day}T00:00:00+05:30`).getTime();
-  },
-
-  createSessionId: (): string => {
-    try {
-      if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-        return crypto.randomUUID();
-      }
-    } catch (e) {}
-    return `sess_${Math.random().toString(36).slice(2)}_${Date.now()}`;
-  },
-
-  getSessionKey: (email: string): string => {
-    return `${STORAGE_KEYS.SESSION_EMAIL_PREFIX}${String(email || '').toLowerCase().trim()}`;
-  },
-
-  // ✅ FIX: Also clear dashboard history cache and idle tracking on logout
-  clearAllSessionData: (user?: User | null) => {
-    localStorage.removeItem(STORAGE_KEYS.AUTH);
-    localStorage.removeItem(STORAGE_KEYS.USER);
-    localStorage.removeItem(STORAGE_KEYS.LAST_VIEW);
-
-    // Clear idle tracking data (was leaking across sessions)
-    localStorage.removeItem(STORAGE_KEYS.IDLE_TRACK);
-
-    if (user?.id) {
-      // Clear the Dashboard's per-user history cache so re-login always starts fresh
-      localStorage.removeItem(`${STORAGE_KEYS.DASHBOARD_SESSION_PREFIX}${user.id}`);
-    }
-
-    if (user?.email) {
-      const sessionEmailKey = utils.getSessionKey(user.email);
-      localStorage.removeItem(sessionEmailKey);
-    }
-  },
-};
-
-// ==================== ARCHIVE COMPUTATION ====================
-const computeArchiveFromHistory = (
-  historyRows: any[],
-  presence: RealtimeStatus[],
-  nowMs: number
-): DaySummary[] => {
-  const byUser = new Map<string, Array<{ status: string; ts: number }>>();
-
-  for (const row of Array.isArray(historyRows) ? historyRows : []) {
-    const userId = String(row?.userId || '');
-    const rawStatus = String(row?.status || '');
-    const status = rawStatus === 'Feedback' ? OfficeStatus.QUALITY_FEEDBACK : rawStatus;
-    const ts = new Date(row?.timestamp).getTime();
-
-    if (!userId || !status || !Number.isFinite(ts)) continue;
-
-    const arr = byUser.get(userId) || [];
-    arr.push({ status, ts });
-    byUser.set(userId, arr);
-  }
-
-  const presenceByUser = new Map<string, RealtimeStatus>();
-  for (const p of Array.isArray(presence) ? presence : []) {
-    if (p?.userId) presenceByUser.set(p.userId, p);
-  }
-
-  const summaries = new Map<string, {
-    userId: string;
-    date: string;
-    startTs: number;
-    endTs: number;
-    productiveMinutes: number;
-    lunchMinutes: number;
-    snacksMinutes: number;
-    refreshmentMinutes: number;
-    feedbackMinutes: number;
-    crossUtilMinutes: number;
-    isLeave?: boolean;
-  }>();
-
-  const addMinutes = (s: any, status: string, minutes: number) => {
-    if (minutes <= 0) return;
-    if (status === OfficeStatus.AVAILABLE) s.productiveMinutes += minutes;
-    else if (status === OfficeStatus.LUNCH) s.lunchMinutes += minutes;
-    else if (status === OfficeStatus.SNACKS) s.snacksMinutes += minutes;
-    else if (status === OfficeStatus.REFRESHMENT_BREAK) s.refreshmentMinutes += minutes;
-    else if (status === OfficeStatus.QUALITY_FEEDBACK) s.feedbackMinutes += minutes;
-    else if (status === OfficeStatus.CROSS_UTILIZATION) s.crossUtilMinutes += minutes;
-    else if (status === OfficeStatus.LEAVE) s.isLeave = true;
-  };
-
-  for (const [userId, events] of byUser.entries()) {
-    const sorted = events.slice().sort((a, b) => a.ts - b.ts);
-
-    for (let i = 0; i < sorted.length; i++) {
-      const cur = sorted[i];
-      const next = sorted[i + 1];
-
-      const startTs = cur.ts;
-      let endTs = next ? next.ts : startTs;
-
-      if (!next) {
-        const pres = presenceByUser.get(userId);
-        if (pres) {
-          const presTs = new Date((pres as any).lastUpdate).getTime();
-          if (Number.isFinite(presTs) && presTs === startTs && String((pres as any).status) === cur.status) {
-            endTs = nowMs;
-          }
-        }
-      }
-
-      let cursor = startTs;
-      while (cursor < endTs) {
-        const dayStart = utils.istStartOfDayMs(cursor);
-        const dayEnd = dayStart + 86400000;
-        const chunkEnd = Math.min(endTs, dayEnd);
-        const minutes = Math.max(0, Math.floor((chunkEnd - cursor) / 60000));
-
-        if (minutes > 0) {
-          const key2 = `${userId}::${utils.toISTDateString(new Date(cursor))}`;
-          const existing2 = summaries.get(key2);
-          const s2 = existing2 || {
-            userId,
-            date: utils.toISTDateString(new Date(cursor)),
-            startTs: cursor,
-            endTs: chunkEnd,
-            productiveMinutes: 0,
-            lunchMinutes: 0,
-            snacksMinutes: 0,
-            refreshmentMinutes: 0,
-            feedbackMinutes: 0,
-            crossUtilMinutes: 0,
-          };
-          s2.startTs = Math.min(s2.startTs, cursor);
-          s2.endTs = Math.max(s2.endTs, chunkEnd);
-          addMinutes(s2, cur.status, minutes);
-          summaries.set(key2, s2);
-        }
-        cursor = chunkEnd;
-      }
-    }
-  }
-
-  const result: DaySummary[] = [];
-  for (const s of summaries.values()) {
-    const totalMinutes = s.productiveMinutes + s.lunchMinutes + s.snacksMinutes +
-      s.refreshmentMinutes + s.feedbackMinutes + s.crossUtilMinutes;
-    result.push({
-      userId: s.userId,
-      date: s.date,
-      loginTime: utils.toISTTimeHHMM(new Date(s.startTs)),
-      logoutTime: utils.toISTTimeHHMM(new Date(s.endTs)),
-      productiveMinutes: s.productiveMinutes,
-      lunchMinutes: s.lunchMinutes,
-      snacksMinutes: s.snacksMinutes,
-      refreshmentMinutes: s.refreshmentMinutes,
-      feedbackMinutes: s.feedbackMinutes,
-      crossUtilMinutes: s.crossUtilMinutes,
-      totalMinutes,
-      isLeave: s.isLeave,
-    });
-  }
-
-  return result;
-};
-
-// ==================== STORAGE MANAGER ====================
-class StorageManager {
-  static getAuth(): User | null {
-    const stored = localStorage.getItem(STORAGE_KEYS.AUTH);
-    return utils.safeParseJson(stored);
-  }
-
-  static saveAuth(user: User) {
-    localStorage.setItem(STORAGE_KEYS.AUTH, JSON.stringify(user));
-    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
-  }
-
-  static getUsers(): User[] {
-    const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-    const parsed = utils.safeParseJson(stored);
-    return Array.isArray(parsed) ? parsed : [];
-  }
-
-  static saveUsers(users: User[]) {
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
-  }
-
-  static getSettings(): AppSettings {
-    const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    const parsed = utils.safeParseJson(stored);
-    return parsed || DEFAULT_SETTINGS;
-  }
-
-  static saveSettings(settings: AppSettings) {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
-  }
-
-  static getArchive(): DaySummary[] {
-    const stored = localStorage.getItem(STORAGE_KEYS.ARCHIVE);
-    const parsed = utils.safeParseJson(stored);
-    return Array.isArray(parsed) ? parsed : [];
-  }
-
-  static saveArchive(archive: DaySummary[]) {
-    localStorage.setItem(STORAGE_KEYS.ARCHIVE, JSON.stringify(archive));
-  }
-
-  static getLastView(): 'dashboard' | 'monitor' | 'analytics' | 'management' | 'settings' {
-    const saved = localStorage.getItem(STORAGE_KEYS.LAST_VIEW);
-    if (saved === 'dashboard' || saved === 'monitor' || saved === 'analytics' ||
-      saved === 'management' || saved === 'settings') {
-      return saved;
-    }
-    return 'dashboard';
-  }
-
-  static saveLastView(view: string) {
-    localStorage.setItem(STORAGE_KEYS.LAST_VIEW, view);
-  }
-
-  static getOrCreateSessionId(email: string): string {
-    const key = utils.getSessionKey(email);
-    const existing = localStorage.getItem(key);
-    if (existing) {
-      console.log('[storage] Using existing sessionId for email:', email);
-      return existing;
-    }
-
-    const newSessionId = utils.createSessionId();
-    localStorage.setItem(key, newSessionId);
-    console.log('[storage] Created new sessionId for email:', email, newSessionId);
-    return newSessionId;
-  }
+interface DashboardProps {
+  user: User;
+  settings: AppSettings;
+  realtimeStatuses: RealtimeStatus[];
+  setRealtimeStatuses: (statuses: RealtimeStatus[] | ((prev: RealtimeStatus[]) => RealtimeStatus[])) => void;
+  socket?: Socket | null;
+  hasSynced?: boolean;
+  serverOffsetMs?: number;
 }
 
-// ==================== MAIN APP COMPONENT ====================
-const App: React.FC = () => {
-  // ==================== STATE ====================
-  const [user, setUser] = useState<User | null>(() => StorageManager.getAuth());
-  const [loading, setLoading] = useState(true);
-  const [isConnected, setIsConnected] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'monitor' | 'analytics' | 'management' | 'settings'>(
-    () => StorageManager.getLastView()
-  );
-  const [users, setUsers] = useState<User[]>(() => StorageManager.getUsers());
-  const [performanceHistory, setPerformanceHistory] = useState<DaySummary[]>(() => StorageManager.getArchive());
-  const [hasSynced, setHasSynced] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>(() => StorageManager.getSettings());
-  const [realtimeStatuses, setRealtimeStatuses] = useState<RealtimeStatus[]>([]);
-  const [forceLogoutFlags, setForceLogoutFlags] = useState<Set<string>>(new Set());
-  const [serverOffsetMs, setServerOffsetMs] = useState(0);
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [loginError, setLoginError] = useState<string>('');
-  const [socketReconnectTrigger, setSocketReconnectTrigger] = useState(0);
+const Dashboard: React.FC<DashboardProps> = ({
+  user,
+  settings,
+  realtimeStatuses,
+  setRealtimeStatuses,
+  socket,
+  hasSynced,
+  serverOffsetMs = 0,
+}) => {
+  const [currentStatus, setCurrentStatus] = useState<string>(OfficeStatus.AVAILABLE);
+  const [history, setHistory] = useState<StatusLogEntry[]>([]);
+  const [timer, setTimer] = useState(0);
+  const [indiaTime, setIndiaTime] = useState(new Date());
 
-  // ==================== REFS ====================
-  const socketRef = useRef<Socket | null>(null);
-  const realtimeStatusesRef = useRef<RealtimeStatus[]>([]);
-  const serverOffsetRef = useRef(0);
-  const activityPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isLoggingOutRef = useRef(false);
-  const isLoggedInRef = useRef(false);
-  const freshLoginRef = useRef(false);
-  const applyLogoutRef = useRef<(opts?: any) => void>(() => {});
+  // ✅ FIX: Track whether we've initialized from server (prevents stale localStorage restore)
+  const serverInitializedRef = useRef(false);
+  // ✅ FIX: Track mount time so we don't restore history from before this login
+  const mountTimeRef = useRef(Date.now() + serverOffsetMs);
 
-  // ==================== LOGOUT HANDLER ====================
-  const applyLogout = useCallback(async (opts?: {
-    auth?: User | null;
-    broadcast?: boolean;
-    reason?: string;
-    skipEmit?: boolean;
-  }) => {
-    if (isLoggingOutRef.current) {
-      console.log('[logout] Already logging out, skipping...');
+  const storageKey = `officely_session_${user.id}`;
+
+  // Find user's realtime presence from server
+  const myRealtimeData = useMemo(() => {
+    return realtimeStatuses.find(s => s.userId === user.id);
+  }, [realtimeStatuses, user.id]);
+
+  // Helper: IST start-of-day in ms
+  const getISTDayStartMs = (nowMs: number): number => {
+    const dayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(nowMs));
+    return new Date(`${dayStr}T00:00:00+05:30`).getTime();
+  };
+
+  // ==================== SYNC FROM SERVER PRESENCE ====================
+  // Server is always authoritative. When myRealtimeData arrives, update status + timer.
+  useEffect(() => {
+    if (!myRealtimeData) return;
+
+    // Mark that server has initialized this session
+    serverInitializedRef.current = true;
+
+    setCurrentStatus(myRealtimeData.status);
+
+    const nowMs = Date.now() + serverOffsetMs;
+    const todayStartMs = getISTDayStartMs(nowMs);
+    const serverTimestamp = new Date(myRealtimeData.lastUpdate).getTime();
+
+    if (!Number.isFinite(serverTimestamp)) {
+      setTimer(0);
       return;
     }
 
-    isLoggingOutRef.current = true;
-    isLoggedInRef.current = false;
-    freshLoginRef.current = false;
+    const elapsed = Math.floor((nowMs - Math.max(serverTimestamp, todayStartMs)) / 1000);
+    setTimer(elapsed > 0 ? elapsed : 0);
 
-    const auth = opts?.auth || user;
-    const broadcast = Boolean(opts?.broadcast);
-    const skipEmit = Boolean(opts?.skipEmit);
+    // Add to local history if status actually changed
+    setHistory(prev => {
+      const nextTs = new Date(myRealtimeData.lastUpdate);
+      if (!Number.isFinite(nextTs.getTime())) return prev;
 
-    console.log('[logout] Starting logout process', {
-      userId: auth?.id,
-      email: auth?.email,
-      reason: opts?.reason,
-      broadcast,
-      skipEmit
+      const latest = prev[0];
+      if (!latest) {
+        return [{
+          id: Math.random().toString(36).substr(2, 9),
+          userId: user.id,
+          status: myRealtimeData.status,
+          timestamp: nextTs,
+        }];
+      }
+
+      const latestTs = latest.timestamp instanceof Date
+        ? latest.timestamp.getTime()
+        : new Date(latest.timestamp as any).getTime();
+      const serverTs = nextTs.getTime();
+
+      const statusChanged = latest.status !== myRealtimeData.status;
+      const serverNewer = serverTs > latestTs + 500;
+
+      if (!statusChanged && !serverNewer) return prev;
+
+      return [{
+        id: Math.random().toString(36).substr(2, 9),
+        userId: user.id,
+        status: myRealtimeData.status,
+        timestamp: nextTs,
+      }, ...prev];
     });
+  }, [myRealtimeData, serverOffsetMs, user.id]);
 
-    try {
-      if (activityPollRef.current) {
-        console.log('[logout] Stopping activity poll');
-        clearInterval(activityPollRef.current);
-        activityPollRef.current = null;
-      }
+  // ==================== HISTORY FROM SERVER (authoritative) ====================
+  useEffect(() => {
+    if (!socket) return;
 
-      const sock = socketRef.current;
+    const onHistoryUpdate = (rows: any[]) => {
+      try {
+        const nowMs = Date.now() + serverOffsetMs;
+        const todayStartMs = getISTDayStartMs(nowMs);
 
-      if (!skipEmit && auth?.id && sock?.connected) {
-        console.log('[logout] Emitting user_logout to server');
-        sock.emit('user_logout', auth.id);
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+        // ✅ FIX: Only load TODAY's entries for this user
+        const next = (Array.isArray(rows) ? rows : [])
+          .filter((r) => String(r?.userId) === String(user.id))
+          .map((r) => ({
+            id: String(r?.id || Math.random().toString(36).substr(2, 9)),
+            userId: String(r?.userId || user.id),
+            status: r?.status as OfficeStatus,
+            timestamp: new Date(r?.timestamp),
+          }))
+          .filter((e) => {
+            const ts = e.timestamp.getTime();
+            return Number.isFinite(ts) && ts >= todayStartMs;
+          });
 
-      if (sock) {
-        console.log('[logout] Disconnecting socket');
-        sock.removeAllListeners();
-        sock.disconnect();
-      }
-
-      setTimeout(() => {
-        socketRef.current = null;
-        setSocket(null);
-        console.log('[logout] Socket ref cleared, triggering reconnection');
-        setSocketReconnectTrigger(prev => prev + 1);
-      }, 300);
-
-      console.log('[logout] Clearing storage');
-      // ✅ FIX: clearAllSessionData now also clears dashboard history + idle track
-      utils.clearAllSessionData(auth);
-
-      console.log('[logout] Clearing presence state');
-      setRealtimeStatuses([]);
-      realtimeStatusesRef.current = [];
-
-      console.log('[logout] Resetting state');
-      setUser(null);
-      setView('dashboard');
-      setPerformanceHistory([]);
-      setHasSynced(false);
-      setLoginError('');
-      setIsConnected(false);
-
-      if (broadcast) {
-        console.log('[logout] Broadcasting to other tabs');
-        try {
-          localStorage.setItem(STORAGE_KEYS.LOGOUT_BROADCAST, JSON.stringify({
-            ts: Date.now(),
-            reason: opts?.reason || 'logout',
-            userId: auth?.id || null,
-            email: auth?.email || null,
-          }));
-          setTimeout(() => {
-            localStorage.removeItem(STORAGE_KEYS.LOGOUT_BROADCAST);
-          }, 1000);
-        } catch (e) {
-          console.error('[logout] Failed to broadcast:', e);
+        if (next.length > 0) {
+          setHistory(next);
+          // Update localStorage cache with fresh server data
+          localStorage.setItem(storageKey, JSON.stringify(next));
         }
-      }
-
-      console.log('[logout] Logout complete');
-    } catch (error) {
-      console.error('[logout] Error during logout:', error);
-    } finally {
-      setTimeout(() => {
-        isLoggingOutRef.current = false;
-      }, 500);
-    }
-  }, [user]);
-
-  useEffect(() => {
-    applyLogoutRef.current = applyLogout;
-  }, [applyLogout]);
-
-  useEffect(() => {
-    isLoggedInRef.current = user !== null;
-  }, [user]);
-
-  // ==================== STORAGE EVENT LISTENER (CROSS-TAB SYNC) ====================
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (isLoggingOutRef.current) return;
-
-      if (e.key === STORAGE_KEYS.AUTH && e.newValue === null) {
-        console.log('[storage] Auth removed in another tab');
-        let oldAuth: User | null = null;
-        try {
-          if (e.oldValue) oldAuth = JSON.parse(e.oldValue);
-        } catch (err) {}
-        applyLogoutRef.current({ auth: oldAuth, broadcast: false, reason: 'auth_removed', skipEmit: true });
-        return;
-      }
-
-      if (e.key === STORAGE_KEYS.LOGOUT_BROADCAST && e.newValue) {
-        console.log('[storage] Logout broadcast received');
-        let payload: any = null;
-        try {
-          payload = JSON.parse(e.newValue);
-        } catch (err) {}
-
-        if (!user || !payload?.userId || payload.userId === user.id) {
-          applyLogoutRef.current({ auth: payload, broadcast: false, reason: 'logout_broadcast', skipEmit: true });
-        }
-      }
-
-      if (user?.email && e.key === utils.getSessionKey(user.email) && e.newValue !== e.oldValue) {
-        console.log('[storage] Session ID changed, another tab took over');
-        applyLogoutRef.current({ auth: user, broadcast: false, reason: 'session_takeover', skipEmit: true });
-      }
+      } catch (e) {}
     };
 
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, [user]);
-
-  // ==================== DEBUG SESSION FUNCTION ====================
-  const debugSession = useCallback(async () => {
-    const auth = StorageManager.getAuth();
-    if (!auth?.email) {
-      console.log('[debug] No stored auth or email');
-      return;
-    }
-
-    const emailSessionId = StorageManager.getOrCreateSessionId(auth.email);
-
-    console.log('[debug] Session IDs:', {
-      userId: auth.id,
-      email: auth.email,
-      emailSessionId,
-    });
-
-    try {
-      const serverIp = localStorage.getItem(STORAGE_KEYS.SERVER_IP) || 'https://server2-e3p9.onrender.com';
-      const res = await fetch(`${serverIp}/api/Office/debug_session?userId=${auth.id}`);
-      const data = await res.json();
-      console.log('[debug] Server state:', data);
-    } catch (e) {
-      console.error('[debug] Failed to fetch server state:', e);
-    }
-  }, []);
-
-  // ==================== SOCKET CONNECTION ====================
-  useEffect(() => {
-    if (socketRef.current) return;
-
-    console.log('[socket] Initializing connection');
-
-    const storedArchive = StorageManager.getArchive();
-    if (storedArchive.length > 0) {
-      setPerformanceHistory(storedArchive);
-    }
-
-    const savedServer = localStorage.getItem(STORAGE_KEYS.SERVER_IP);
-    const isIpv4 = (v: string) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(v);
-    const envServer = (import.meta as any)?.env?.VITE_BACKEND_URL as string | undefined;
-    const localhostDefault = 'https://server2-e3p9.onrender.com';
-
-    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    const isHttps = window.location.protocol === 'https:';
-    const isRenderHost = /\.onrender\.com$/i.test(window.location.hostname);
-
-    const serverUrl = savedServer
-      ? (savedServer.startsWith('http://') || savedServer.startsWith('https://')
-        ? savedServer
-        : (isIpv4(savedServer)
-          ? `http://${savedServer}:3001`
-          : `https://${savedServer}`))
-      : (envServer
-        ? envServer
-        : ((isHttps || isRenderHost)
-          ? localhostDefault
-          : (isLocalhost
-            ? localhostDefault
-            : `http://${window.location.hostname}:3001`)));
-
-    console.log(`[socket] Connecting to: ${serverUrl}`);
-
-    const newSocket = io(serverUrl, {
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 10000,
-      autoConnect: true,
-    });
-
-    socketRef.current = newSocket;
-    setSocket(newSocket);
-
-    setRealtimeStatuses([]);
-    realtimeStatusesRef.current = [];
-
-    // ==================== ACTIVITY POLLING ====================
-    const pollId = setInterval(async () => {
-      if (!isLoggedInRef.current) {
-        console.log('[activity] Skipping poll - not logged in');
-        return;
-      }
-
-      try {
-        const res = await fetch(`${serverUrl}/api/Office/status`);
-        if (!res.ok) {
-          console.warn('[activity] Poll failed', res.status);
-          return;
-        }
-        const json = await res.json();
-        const snapshot = Array.isArray(json?.snapshot) ? json.snapshot : [];
-        if (snapshot.length === 0) return;
-
-        setRealtimeStatuses((prev) => {
-          const nowMs = Date.now() + serverOffsetRef.current;
-          const dayKey = utils.toISTDateString(new Date(nowMs));
-          const idleStoreRaw = utils.safeParseJson(localStorage.getItem(STORAGE_KEYS.IDLE_TRACK));
-          const idleStore: any = (idleStoreRaw && typeof idleStoreRaw === 'object') ? idleStoreRaw : {};
-          const dayBucket: any = (idleStore[dayKey] && typeof idleStore[dayKey] === 'object') ? idleStore[dayKey] : {};
-
-          const byId = new Map<string, RealtimeStatus>(
-            prev.map((p) => [p.userId, p] as const)
-          );
-
-          for (const s of snapshot) {
-            const userId = String(s?.user_id ?? '').trim();
-            if (!userId) continue;
-
-            const existing = byId.get(userId);
-            if (!existing) continue;
-
-            const nextActivityRaw = Number(s?.status);
-            const nextActivity = (nextActivityRaw === 0 || nextActivityRaw === 1 || nextActivityRaw === 2)
-              ? (nextActivityRaw as 0 | 1 | 2)
-              : undefined;
-            const updatedAtRaw = (s as any)?.updatedAt ?? (s as any)?.updated_at;
-            const nextUpdatedAt = (typeof updatedAtRaw === 'number' && Number.isFinite(updatedAtRaw))
-              ? updatedAtRaw
-              : undefined;
-
-            const prevActivity = (existing && typeof existing.activity === 'number') ? existing.activity : undefined;
-            const prevIdleStart = dayBucket?.[userId]?.idleStartMs;
-            const prevIdleStartMs = (typeof prevIdleStart === 'number' && Number.isFinite(prevIdleStart)) ? prevIdleStart : null;
-            const prevIdleTotalMsRaw = dayBucket?.[userId]?.idleTotalMs;
-            const prevIdleTotalMs = (typeof prevIdleTotalMsRaw === 'number' && Number.isFinite(prevIdleTotalMsRaw)) ? prevIdleTotalMsRaw : 0;
-
-            const effectiveTs = (typeof nextUpdatedAt === 'number' && Number.isFinite(nextUpdatedAt)) ? nextUpdatedAt : nowMs;
-            const nextIsIdle = nextActivity === 0;
-            const prevIsIdle = prevActivity === 0;
-
-            const currentStatus = (existing?.status || OfficeStatus.AVAILABLE) as OfficeStatus;
-            const allowIdleTracking = currentStatus === OfficeStatus.AVAILABLE;
-
-            if (!allowIdleTracking) {
-              if (typeof prevIdleStartMs === 'number') {
-                const delta = Math.max(0, effectiveTs - prevIdleStartMs);
-                dayBucket[userId] = {
-                  ...(dayBucket[userId] || {}),
-                  idleStartMs: null,
-                  idleTotalMs: prevIdleTotalMs + delta,
-                };
-              }
-            } else if (nextIsIdle && (typeof prevIdleStartMs !== 'number')) {
-              dayBucket[userId] = {
-                ...(dayBucket[userId] || {}),
-                idleStartMs: effectiveTs,
-                idleTotalMs: prevIdleTotalMs,
-              };
-            } else if (nextIsIdle && !prevIsIdle) {
-              dayBucket[userId] = {
-                ...(dayBucket[userId] || {}),
-                idleStartMs: effectiveTs,
-                idleTotalMs: prevIdleTotalMs,
-              };
-            } else if (!nextIsIdle && prevIsIdle) {
-              if (typeof prevIdleStartMs === 'number') {
-                const delta = Math.max(0, effectiveTs - prevIdleStartMs);
-                dayBucket[userId] = {
-                  ...(dayBucket[userId] || {}),
-                  idleStartMs: null,
-                  idleTotalMs: prevIdleTotalMs + delta,
-                };
-              } else {
-                dayBucket[userId] = {
-                  ...(dayBucket[userId] || {}),
-                  idleStartMs: null,
-                  idleTotalMs: prevIdleTotalMs,
-                };
-              }
-            }
-
-            const existingLast = typeof existing.lastActivityAt === 'number' ? existing.lastActivityAt : undefined;
-            const shouldBump = typeof nextUpdatedAt === 'number' && (!existingLast || nextUpdatedAt > existingLast);
-
-            byId.set(userId, {
-              ...existing,
-              activity: nextActivity,
-              ...(shouldBump ? { lastActivityAt: nextUpdatedAt, activityUpdatedAt: nextUpdatedAt } : {}),
-            });
-          }
-
-          const next = Array.from(byId.values());
-          realtimeStatusesRef.current = next;
-
-          try {
-            idleStore[dayKey] = dayBucket;
-            localStorage.setItem(STORAGE_KEYS.IDLE_TRACK, JSON.stringify(idleStore));
-          } catch (e) {}
-
-          return next;
-        });
-      } catch (e) {
-        console.warn('[activity] Poll error', e);
-      }
-    }, 2000);
-
-    activityPollRef.current = pollId;
-
-    // ==================== SOCKET EVENT HANDLERS ====================
-
-    newSocket.on('connect', () => {
-      console.log('[socket] Connected');
-      setIsConnected(true);
-      setLoading(false);
-
-      if (freshLoginRef.current) {
-        console.log('[socket] Fresh login in progress, skipping auto-resume');
-        return;
-      }
-
-      try {
-        const storedAuth = StorageManager.getAuth();
-
-        if (storedAuth?.id && storedAuth?.email) {
-          const sessionId = StorageManager.getOrCreateSessionId(storedAuth.email);
-
-          console.log('[socket] Resuming session', {
-            userId: storedAuth.id,
-            email: storedAuth.email,
-            sessionId
-          });
-
-          newSocket.emit('auth_resume', {
-            userId: storedAuth.id,
-            sessionId
-          });
-        } else {
-          console.log('[socket] No stored auth or incomplete data, skipping resume');
-        }
-      } catch (e) {
-        console.error('[socket] Failed to resume session:', e);
-      }
-    });
-
-    newSocket.on('connect_error', (err) => {
-      console.error('[socket] Connection error:', err.message);
-      setLoading(false);
-    });
-
-    newSocket.on('disconnect', (reason) => {
-      console.log('[socket] Disconnected:', reason);
-      setIsConnected(false);
-    });
-
-    newSocket.on('system_sync', ({ users, presence, history, settings: syncedSettings, serverTime }) => {
-      console.log('[socket] System sync received', { presenceCount: presence.length });
-
-      setUsers(users);
-      StorageManager.saveUsers(users);
-
-      if (Array.isArray(presence) && presence.length > 0) {
-        setRealtimeStatuses(presence);
-        realtimeStatusesRef.current = presence;
-      } else {
-        console.log('[socket] Empty presence from server - clearing UI');
-        setRealtimeStatuses([]);
-        realtimeStatusesRef.current = [];
-      }
-
-      setHasSynced(true);
-
-      if (typeof serverTime === 'number' && Number.isFinite(serverTime)) {
-        const offset = serverTime - Date.now();
-        serverOffsetRef.current = offset;
-        setServerOffsetMs(offset);
-      }
-
-      if (syncedSettings) {
-        console.log('[socket] Settings sync:', syncedSettings);
-        setSettings(syncedSettings);
-        StorageManager.saveSettings(syncedSettings);
-      }
-
-      if (Array.isArray(history) && history.length > 0) {
-        const computed = computeArchiveFromHistory(history, presence, Date.now() + serverOffsetRef.current);
-        StorageManager.saveArchive(computed);
-        setPerformanceHistory(computed);
-      }
-    });
-
-    newSocket.on('users_update', (updatedUsers) => {
-      console.log('[socket] Users update');
-      setUsers(updatedUsers);
-      StorageManager.saveUsers(updatedUsers);
-    });
-
-    newSocket.on('history_update', (historyRows) => {
-      try {
-        const computed = computeArchiveFromHistory(
-          historyRows,
-          realtimeStatusesRef.current,
-          Date.now() + serverOffsetRef.current
-        );
-        StorageManager.saveArchive(computed);
-        setPerformanceHistory(computed);
-      } catch (e) {
-        console.error('[socket] Failed to update history:', e);
-      }
-    });
-
-    newSocket.on('presence_update', (data: RealtimeStatus) => {
-      try {
-        const st = (data as any)?.serverTime;
-        if (typeof st === 'number' && Number.isFinite(st)) {
-          const offset = st - Date.now();
-          serverOffsetRef.current = offset;
-          setServerOffsetMs(offset);
-        }
-      } catch (e) {}
-
-      setRealtimeStatuses(prev => {
-        const existing = prev.find((p) => p.userId === data.userId);
-        const incomingLastAt = (data as any)?.lastActivityAt;
-        const normalizedLastAt = (typeof incomingLastAt === 'number' && Number.isFinite(incomingLastAt))
-          ? incomingLastAt
-          : (existing?.lastActivityAt);
-
-        const normalized: RealtimeStatus = {
-          ...(data as any),
-          ...(typeof normalizedLastAt === 'number' ? {
-            lastActivityAt: normalizedLastAt,
-            activityUpdatedAt: normalizedLastAt
-          } : {}),
-        } as RealtimeStatus;
-
-        const filtered = prev.filter(s => s.userId !== data.userId);
-        const next = [...filtered, normalized];
-        realtimeStatusesRef.current = next;
-        return next;
-      });
-    });
-
-    newSocket.on('user_offline', (userId: string) => {
-      console.log('[socket] User offline:', userId);
-
-      try {
-        const nowMs = Date.now() + serverOffsetRef.current;
-        const dayKey = utils.toISTDateString(new Date(nowMs));
-        const idleStoreRaw = utils.safeParseJson(localStorage.getItem(STORAGE_KEYS.IDLE_TRACK));
-        const idleStore: any = (idleStoreRaw && typeof idleStoreRaw === 'object') ? idleStoreRaw : {};
-        const dayBucket: any = (idleStore[dayKey] && typeof idleStore[dayKey] === 'object') ? idleStore[dayKey] : {};
-        const row = dayBucket?.[userId];
-        const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs)) ? row.idleStartMs : null;
-        const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs)) ? row.idleTotalMs : 0;
-
-        if (typeof idleStartMs === 'number') {
-          const delta = Math.max(0, nowMs - idleStartMs);
-          dayBucket[userId] = { ...(row || {}), idleStartMs: null, idleTotalMs: idleTotalMs + delta };
-          idleStore[dayKey] = dayBucket;
-          localStorage.setItem(STORAGE_KEYS.IDLE_TRACK, JSON.stringify(idleStore));
-        }
-      } catch (e) {}
-
-      setRealtimeStatuses(prev => {
-        const next = prev.filter(s => s.userId !== userId);
-        realtimeStatusesRef.current = next;
-        console.log(`[user_offline] Removed ${userId} from presence, ${next.length} users remaining`);
-        return next;
-      });
-    });
-
-    newSocket.on('settings_update', (nextSettings: AppSettings) => {
-      if (!nextSettings) return;
-      console.log('[socket] Settings update:', nextSettings);
-      setSettings(nextSettings);
-      StorageManager.saveSettings(nextSettings);
-    });
-
-    newSocket.on('force_logout', ({ message }) => {
-      console.log('[socket] Force logout received');
-      const currentUser = StorageManager.getAuth();
-
-      setRealtimeStatuses([]);
-      realtimeStatusesRef.current = [];
-      setHasSynced(false);
-
-      alert(message || 'You have been logged out.');
-      applyLogoutRef.current({ auth: currentUser, broadcast: true, reason: 'force_logout' });
-    });
-
-    newSocket.on('auth_success', (authenticatedUser: User) => {
-      if (isLoggingOutRef.current) {
-        console.log('[auth] Ignoring auth_success — logout in progress');
-        return;
-      }
-
-      if (socketRef.current === null) {
-        console.log('[auth] Ignoring auth_success — socket already cleaned up');
-        return;
-      }
-
-      console.log('[socket] Auth success:', authenticatedUser.id);
-
-      freshLoginRef.current = false;
-      isLoggedInRef.current = true;
-
-      setLoginError('');
-      setUser(authenticatedUser);
-      setView('dashboard');
-      StorageManager.saveAuth(authenticatedUser);
-
-      setTimeout(() => {
-        debugSession();
-      }, 1000);
-    });
-
-    newSocket.on('auth_failure', ({ message }) => {
-      console.log('[socket] Auth failure:', message);
-
-      freshLoginRef.current = false;
-      isLoggedInRef.current = false;
-
-      setLoginError(message || 'Authentication failed.');
-      setLoading(false);
-
-      setRealtimeStatuses([]);
-      realtimeStatusesRef.current = [];
-      setHasSynced(false);
-    });
-
+    socket.on('history_update', onHistoryUpdate);
     return () => {
-      console.log('[socket] Cleaning up connection');
-
-      if (activityPollRef.current) {
-        clearInterval(activityPollRef.current);
-        activityPollRef.current = null;
-      }
-
-      if (socketRef.current) {
-        socketRef.current.removeAllListeners();
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
+      socket.off('history_update', onHistoryUpdate);
     };
-  }, [debugSession, socketReconnectTrigger]);
+  }, [socket, user.id, serverOffsetMs, storageKey]);
 
-  // ==================== VIEW MANAGEMENT ====================
+  // ==================== LOCAL INIT (hasSynced) ====================
+  // ✅ FIX: Only restore localStorage if server hasn't set our status yet.
+  //         NEVER re-emit a stale status to the server — server is authoritative
+  //         after login (always resets to Available via auth_login handler).
   useEffect(() => {
-    if (!user) return;
-    if (isLoggingOutRef.current) return;
+    if (!hasSynced) return;
 
-    const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
-    const isSuper = user.role === UserRole.SUPER_USER;
+    // If server already gave us our status, skip localStorage restore entirely
+    if (serverInitializedRef.current) return;
 
-    const saved = StorageManager.getLastView();
+    const nowMs = Date.now() + serverOffsetMs;
+    const todayStartMs = getISTDayStartMs(nowMs);
 
-    const allowed = (v: typeof view) => {
-      if (v === 'monitor' || v === 'management') return isPrivileged;
-      if (v === 'settings') return isSuper;
-      if (v === 'dashboard') return !isPrivileged;
-      if (v === 'analytics') return true;
-      return false;
-    };
+    const savedSession = localStorage.getItem(storageKey);
+    if (savedSession) {
+      try {
+        const parsed = JSON.parse(savedSession);
+        // ✅ FIX: Only restore entries from TODAY — never bleed yesterday's history
+        const todayEntries = parsed
+          .map((entry: any) => ({ ...entry, timestamp: new Date(entry.timestamp) }))
+          .filter((e: any) => {
+            const ts = e.timestamp.getTime();
+            return Number.isFinite(ts) && ts >= todayStartMs;
+          });
 
-    if (allowed(saved)) {
-      setView(saved);
-    } else {
-      setView(isPrivileged ? 'monitor' : 'dashboard');
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    StorageManager.saveLastView(view);
-  }, [view, user]);
-
-  // ==================== SETTINGS EFFECTS ====================
-  useEffect(() => {
-    if (settings?.siteName) document.title = settings.siteName;
-  }, [settings?.siteName]);
-
-  useEffect(() => {
-    if (settings.darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [settings.darkMode]);
-
-  // ==================== EVENT HANDLERS ====================
-  const handleLogin = useCallback((credentials: any) => {
-    if (!isConnected) {
-      alert("System Offline: Cannot authorize at this time.");
-      return;
+        if (todayEntries.length > 0) {
+          setHistory(todayEntries);
+        }
+      } catch (e) {
+        // Corrupted cache — clear it
+        localStorage.removeItem(storageKey);
+      }
     }
 
-    setLoginError('');
+    // ✅ FIX: DO NOT emit status_change here.
+    // The server always resets to Available on auth_login.
+    // Emitting stale status here was overriding that reset — the root cause of the bug.
+    // If myRealtimeData hasn't arrived yet, wait — it will come via presence_update.
+  }, [hasSynced, serverOffsetMs, storageKey]);
 
-    try {
-      const storedAuth = StorageManager.getAuth();
-      const incomingEmail = String(credentials?.email || '').toLowerCase().trim();
+  // Persist history to localStorage whenever it changes
+  useEffect(() => {
+    if (history.length > 0) {
+      localStorage.setItem(storageKey, JSON.stringify(history));
+    }
+  }, [history, storageKey]);
 
-      if (!incomingEmail) {
-        setLoginError('Email is required');
+  // ==================== TIMER ====================
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nowMs = Date.now() + serverOffsetMs;
+      setIndiaTime(new Date(nowMs));
+
+      // ✅ FIX: No server data = no timer. Prevents stale countdown after logout/re-login.
+      if (!myRealtimeData) {
+        setTimer(0);
         return;
       }
 
-      if (storedAuth && incomingEmail) {
-        const existingEmail = String(storedAuth?.email || '').toLowerCase().trim();
+      const todayStartMs = getISTDayStartMs(nowMs);
+      const serverTimestamp = new Date(myRealtimeData.lastUpdate).getTime();
 
-        if (existingEmail && existingEmail !== incomingEmail) {
-          alert(`Already logged in as ${storedAuth?.name || storedAuth?.id}. Please logout first to switch accounts.`);
-          return;
-        }
+      if (!Number.isFinite(serverTimestamp)) {
+        setTimer(0);
+        return;
       }
-    } catch (e) {
-      console.error('[login] Error checking existing auth:', e);
+
+      const elapsed = Math.floor((nowMs - Math.max(serverTimestamp, todayStartMs)) / 1000);
+      setTimer(elapsed > 0 ? elapsed : 0);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [serverOffsetMs, myRealtimeData]);
+
+  // ==================== STATUS CHANGE ====================
+  const changeStatus = (newStatus: string) => {
+    if (newStatus === currentStatus) return;
+
+    const statusData = {
+      userId: user.id,
+      userName: user.name,
+      role: user.role,
+      status: newStatus as OfficeStatus,
+    };
+
+    if (socket) {
+      socket.emit('status_change', statusData);
     }
 
-    freshLoginRef.current = true;
-    const email = String(credentials?.email || '').toLowerCase().trim();
-    const sessionId = StorageManager.getOrCreateSessionId(email);
+    const newEntry: StatusLogEntry = {
+      id: Math.random().toString(36).substr(2, 9),
+      userId: user.id,
+      status: newStatus as OfficeStatus,
+      timestamp: new Date(),
+    };
+    setHistory(prev => [newEntry, ...prev]);
+  };
 
-    console.log('[login] Attempting login', { email, sessionId });
-    socket?.emit('auth_login', { ...credentials, sessionId });
-  }, [isConnected, socket]);
+  // ==================== STATS (today only) ====================
+  const stats = useMemo(() => {
+    const totals: Record<string, number> = {};
+    if (history.length === 0) return totals;
 
-  const handleLogout = useCallback(() => {
-    console.log('[logout] Manual logout triggered');
-    applyLogout({ auth: user, broadcast: true, reason: 'manual_logout' });
-  }, [applyLogout, user]);
+    const nowMs = Date.now() + serverOffsetMs;
+    const todayStartMs = getISTDayStartMs(nowMs);
+    const todayEndMs = todayStartMs + 86400000;
 
-  const setServerIp = useCallback(() => {
-    const ip = prompt(
-      "Enter Server URL (https://server2-e3p9.onrender.com) or Server IP (192.168.1.5):",
-      localStorage.getItem(STORAGE_KEYS.SERVER_IP) || 'https://server2-e3p9.onrender.com'
-    );
-    if (ip !== null) {
-      localStorage.setItem(STORAGE_KEYS.SERVER_IP, ip);
-      window.location.reload();
+    for (let i = 0; i < history.length; i++) {
+      const current = history[i];
+      const startTime = current.timestamp instanceof Date
+        ? current.timestamp.getTime()
+        : new Date(current.timestamp as any).getTime();
+
+      if (!Number.isFinite(startTime)) continue;
+
+      // i === 0 is the most recent entry
+      let endTime = i === 0
+        ? startTime
+        : (history[i - 1].timestamp instanceof Date
+          ? history[i - 1].timestamp.getTime()
+          : new Date(history[i - 1].timestamp as any).getTime());
+
+      // ✅ FIX: Only extend to now if server confirms current status matches
+      if (i === 0 && myRealtimeData) {
+        const sameStatus = String(myRealtimeData.status) === String(current.status);
+        if (sameStatus) endTime = nowMs;
+      }
+
+      const clippedStart = Math.max(startTime, todayStartMs);
+      const clippedEnd = Math.min(endTime, todayEndMs);
+      const durationSeconds = Math.max(0, Math.floor((clippedEnd - clippedStart) / 1000));
+
+      if (durationSeconds > 0) {
+        totals[current.status] = (totals[current.status] || 0) + durationSeconds;
+      }
     }
-  }, []);
+    return totals;
+  }, [history, indiaTime, myRealtimeData, serverOffsetMs]);
+
+  // ==================== TODAY'S SHIFT LOG ====================
+  const todayHistory = useMemo(() => {
+    if (!history || history.length === 0) return [];
+    const nowMs = Date.now() + serverOffsetMs;
+    const todayStartMs = getISTDayStartMs(nowMs);
+    const todayEndMs = todayStartMs + 86400000;
+    return history.filter((h) => {
+      const ts = h.timestamp instanceof Date
+        ? h.timestamp.getTime()
+        : new Date(h.timestamp as any).getTime();
+      return ts >= todayStartMs && ts < todayEndMs;
+    });
+  }, [history, serverOffsetMs]);
+
+  const totalBreakSeconds =
+    (stats[OfficeStatus.LUNCH] || 0) +
+    (stats[OfficeStatus.REFRESHMENT_BREAK] || 0) +
+    (stats[OfficeStatus.SNACKS] || 0);
+
+  const formatElapsedTime = (seconds: number) => {
+    if (!seconds || seconds < 0) return '0s';
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hrs > 0) return `${hrs}h ${mins}m`;
+    if (mins > 0) return `${mins}m ${secs}s`;
+    return `${secs}s`;
+  };
+
+  const formatIST = (date: Date) => {
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(date);
+  };
+
+  const currentConfig = getStatusConfig(currentStatus);
 
   // ==================== RENDER ====================
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
-        <div className="flex flex-col items-center gap-8 w-full max-w-xs px-6">
-          <div className="relative">
-            <div className="w-16 h-16 border-4 border-slate-200 dark:border-slate-800 rounded-full"></div>
-            <div className="absolute inset-0 w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          </div>
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] animate-pulse">
-            Establishing Secure Node...
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <Login
-        onLogin={handleLogin}
-        users={users}
-        settings={settings}
-        onSetIp={setServerIp}
-        loginError={loginError}
-        onClearError={() => setLoginError('')}
-      />
-    );
-  }
-
-  const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
-  const isSuper = user.role === UserRole.SUPER_USER;
-
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
-      <Layout
-        user={user}
-        currentView={view}
-        setView={setView}
-        onLogout={handleLogout}
-        isPrivileged={isPrivileged}
-        isSuper={isSuper}
-        settings={settings}
-        isConnected={isConnected}
-      >
-        {view === 'dashboard' && !isPrivileged && (
-          <Dashboard
-            user={user}
-            settings={settings}
-            realtimeStatuses={realtimeStatuses}
-            setRealtimeStatuses={setRealtimeStatuses}
-            socket={socket}
-            hasSynced={hasSynced}
-            serverOffsetMs={serverOffsetMs}
-          />
-        )}
-        {view === 'monitor' && isPrivileged && (
-          <LiveMonitor
-            user={user}
-            realtimeStatuses={realtimeStatuses}
-            setRealtimeStatuses={setRealtimeStatuses}
-            users={users}
-            settings={settings}
-            socket={socket}
-            hasSynced={hasSynced}
-            serverOffsetMs={serverOffsetMs}
-          />
-        )}
-        {view === 'analytics' && (
-          <Analytics
-            data={performanceHistory}
-            setData={setPerformanceHistory}
-            user={user}
-            users={users}
-          />
-        )}
-        {view === 'management' && isPrivileged && (
-          <Management
-            currentUser={user}
-            users={users}
-            setUsers={setUsers}
-            history={performanceHistory}
-            setHistory={setPerformanceHistory}
-            setForceLogoutFlags={setForceLogoutFlags}
-            socket={socket}
-          />
-        )}
-        {view === 'settings' && isSuper && (
-          <Settings
-            settings={settings}
-            setSettings={setSettings}
-            users={users}
-            socket={socket}
-          />
-        )}
-      </Layout>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="lg:col-span-2 space-y-6">
+        <section className="bg-white dark:bg-slate-800 rounded-[2rem] border border-slate-200 dark:border-slate-700 p-8 shadow-sm">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+            <div>
+              <h2 className="text-2xl font-black text-slate-800 dark:text-white tracking-tight">Work Console</h2>
+              <div className="flex items-center gap-2 mt-1 text-slate-500 font-semibold">
+                <Clock className="w-4 h-4 text-indigo-500" />
+                <span className="text-xs">IST: {formatIST(indiaTime)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {settings.availableStatuses.map((status) => {
+              const config = getStatusConfig(status);
+              const isActive = currentStatus === status;
+              return (
+                <button
+                  key={status}
+                  onClick={() => changeStatus(status)}
+                  className={`flex flex-col items-center justify-center p-5 rounded-2xl border transition-all duration-300 group ${isActive
+                    ? `${config.bg} border-indigo-200 dark:border-indigo-800 shadow-xl scale-[1.03]`
+                    : 'border-slate-100 dark:border-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900'
+                    }`}
+                >
+                  <div className={`p-3 rounded-xl mb-3 transition-transform group-hover:scale-110 ${isActive ? config.color : 'text-slate-400 dark:text-slate-600'}`}>
+                    {config.icon}
+                  </div>
+                  <span className={`text-[10px] font-black uppercase tracking-tighter text-center ${isActive ? 'text-slate-800 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {status}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-1.5 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 rounded-lg">
+                <Zap className="w-4 h-4" />
+              </div>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Productive</span>
+            </div>
+            <p className="text-xl font-black text-slate-800 dark:text-white">
+              {formatElapsedTime(stats[OfficeStatus.AVAILABLE] || 0)}
+            </p>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-1.5 bg-sky-50 dark:bg-sky-900/30 text-sky-600 rounded-lg">
+                <ClipboardCheck className="w-4 h-4" />
+              </div>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Feedback</span>
+            </div>
+            <p className="text-xl font-black text-slate-800 dark:text-white">
+              {formatElapsedTime(stats[OfficeStatus.QUALITY_FEEDBACK] || 0)}
+            </p>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 rounded-lg">
+                <Shuffle className="w-4 h-4" />
+              </div>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Cross-Util</span>
+            </div>
+            <p className="text-xl font-black text-slate-800 dark:text-white">
+              {formatElapsedTime(stats[OfficeStatus.CROSS_UTILIZATION] || 0)}
+            </p>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-1.5 bg-orange-50 dark:bg-orange-900/30 text-orange-600 rounded-lg">
+                <Coffee className="w-4 h-4" />
+              </div>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Breaks</span>
+            </div>
+            <p className="text-xl font-black text-slate-800 dark:text-white">
+              {formatElapsedTime(totalBreakSeconds)}
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <div className="space-y-6">
+        <section className="bg-white dark:bg-slate-800 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-200px)]">
+          <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between sticky top-0 bg-white dark:bg-slate-800 z-10">
+            <h3 className="font-black text-slate-800 dark:text-white uppercase text-sm tracking-tight">Shift Log</h3>
+            <span className="text-[10px] font-bold px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded-full text-slate-500 dark:text-slate-400">
+              {todayHistory.length} Logs
+            </span>
+          </div>
+
+          <div className="overflow-y-auto p-6 space-y-6 custom-scrollbar">
+            <div className="relative space-y-8 before:absolute before:inset-0 before:ml-5 before:-translate-x-px before:h-full before:w-0.5 before:bg-slate-100 dark:before:bg-slate-700">
+              {todayHistory.map((entry, idx) => {
+                const config = getStatusConfig(entry.status);
+                const nextTime = idx === 0 ? indiaTime : todayHistory[idx - 1].timestamp;
+                const entryTs = entry.timestamp instanceof Date
+                  ? entry.timestamp
+                  : new Date(entry.timestamp as any);
+                const nextTs = nextTime instanceof Date ? nextTime : new Date(nextTime as any);
+                const dur = Math.max(0, Math.floor((nextTs.getTime() - entryTs.getTime()) / 1000));
+                return (
+                  <div key={entry.id} className="relative flex items-center gap-6 group">
+                    <div className={`flex-shrink-0 w-10 h-10 rounded-full border-4 border-white dark:border-slate-800 shadow-sm flex items-center justify-center z-10 ${config.bg} ${config.color}`}>
+                      {React.cloneElement(config.icon as any, { className: 'w-4 h-4' })}
+                    </div>
+                    <div className="flex-grow min-w-0">
+                      <div className="flex justify-between items-center">
+                        <p className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-tighter truncate">
+                          {entry.status}
+                        </p>
+                        <span className="text-[10px] font-bold text-slate-400 ml-2">
+                          {formatElapsedTime(dur)}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        {formatIST(entryTs)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 };
 
-export default App;
+export default Dashboard;
