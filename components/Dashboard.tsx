@@ -113,12 +113,16 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
   };
 
+  // ✅ Fixed: Now properly emits initial status when socket connects
   useEffect(() => {
+    if (!socket || !hasSynced) return;
+    
     const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
     const stored = localStorage.getItem(sessionKey);
+    let initialStatus = OfficeStatus.AVAILABLE;
     
     if (stored) {
       try {
@@ -128,6 +132,7 @@ const Dashboard: React.FC<DashboardProps> = ({
           setSessionStartTime(data.startTime);
           setCurrentStatus(data.status || OfficeStatus.AVAILABLE);
           statusChangeTimeRef.current = data.statusChangeTime || data.startTime;
+          initialStatus = data.status || OfficeStatus.AVAILABLE;
         } else {
           const newStartTime = now;
           setSessionStartTime(newStartTime);
@@ -177,7 +182,18 @@ const Dashboard: React.FC<DashboardProps> = ({
         crossUtilMinutes: 0,
       });
     }
-  }, [user.id, serverOffsetMs]);
+    
+    // ✅ CRITICAL FIX: Emit initial status to socket so LiveMonitor can see this user
+    socket.emit('status_change', {
+      userId: user.id,
+      userName: user.name,
+      status: initialStatus,
+      role: user.role,
+      activity: 1,
+    });
+    
+    console.log('[Dashboard] ✅ Emitted initial status:', initialStatus, 'for user:', user.name);
+  }, [user.id, user.name, user.role, serverOffsetMs, socket, hasSynced]);
 
   useEffect(() => {
     if (!sessionStartTime) return;
@@ -327,8 +343,11 @@ const Dashboard: React.FC<DashboardProps> = ({
       userId: user.id,
       userName: user.name,
       status: newStatus,
-      role: user.role
+      role: user.role,
+      activity: 1,
     });
+    
+    console.log('[Dashboard] Status changed to:', newStatus);
   };
 
   useEffect(() => {
@@ -366,6 +385,8 @@ const Dashboard: React.FC<DashboardProps> = ({
     saveSessionStats(sessionStats);
     setCurrentStatus(newStatus);
     statusChangeTimeRef.current = now;
+    
+    console.log('[Dashboard] Status updated from server:', newStatus);
   }, [realtimeStatuses, user.id, currentStatus, serverOffsetMs]);
 
   // ✅ Listen for server command to clear idle data
