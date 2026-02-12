@@ -368,6 +368,29 @@ const Dashboard: React.FC<DashboardProps> = ({
     statusChangeTimeRef.current = now;
   }, [realtimeStatuses, user.id, currentStatus, serverOffsetMs]);
 
+  // ✅ Listen for server command to clear idle data
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleClearIdleData = () => {
+      try {
+        localStorage.removeItem(IDLE_TRACK_KEY);
+        console.log('✅ [Dashboard] Cleared idle tracking data');
+        
+        // Reset idle minutes in current stats display
+        setTodayStats(prev => ({ ...prev, idleMinutes: 0 }));
+      } catch (e) {
+        console.error('❌ [Dashboard] Failed to clear idle data:', e);
+      }
+    };
+
+    socket.on('clear_idle_data', handleClearIdleData);
+
+    return () => {
+      socket.off('clear_idle_data', handleClearIdleData);
+    };
+  }, [socket]);
+
   const formatTime = (ms: number): string => {
     const totalSeconds = Math.floor(ms / 1000);
     const hours = Math.floor(totalSeconds / 3600);
