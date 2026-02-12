@@ -172,7 +172,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
             <p className="text-sm text-slate-400 dark:text-slate-600">Users will appear here when they're online</p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
+          <div className="divide-y divide-slate-100 dark:divide-slate-700/50 overflow-visible">
             {visibleUsers
               .slice()
               .sort((a, b) => getDisplayName(a).localeCompare(getDisplayName(b)))
@@ -202,7 +202,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
                 return (
                   <div 
                     key={u.userId} 
-                    className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200"
+                    className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200 relative z-10"
                     onMouseEnter={() => setHoveredUserId(u.userId)}
                     onMouseLeave={() => setHoveredUserId(null)}
                   >
@@ -246,8 +246,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
                           Override
                         </button>
 
-                        {/* Dropdown Menu */}
-                        <div className={`absolute right-0 top-full mt-2 min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden transition-all duration-200 ${isHovered ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible translate-y-2 pointer-events-none'}`}>
+                        {/* Dropdown Menu - FIXED: Added z-[100] to appear above all content */}
+                        <div className={`absolute right-0 top-full mt-2 min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden transition-all duration-200 z-[100] ${isHovered ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible translate-y-2 pointer-events-none'}`}>
                           <div className="py-2">
                             {settings.availableStatuses.map((status) => (
                               <button
