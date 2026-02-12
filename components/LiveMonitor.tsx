@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import { User, OfficeStatus, RealtimeStatus, AppSettings } from '../types';
 import { getStatusConfig } from '../constants';
-import { RefreshCcw, Activity, UserCog, Clock, Users } from 'lucide-react';
+import { Activity, UserCog, Clock, Users } from 'lucide-react';
 
 interface LiveMonitorProps {
   user: User;
@@ -15,6 +15,180 @@ interface LiveMonitorProps {
   serverOffsetMs?: number;
 }
 
+// ==================== DROPDOWN (fixed-positioned, escapes overflow-hidden) ====================
+interface OverrideDropdownProps {
+  anchorRef: React.RefObject<HTMLButtonElement>;
+  statuses: string[];
+  onSelect: (status: string) => void;
+  onClose: () => void;
+}
+
+const OverrideDropdown: React.FC<OverrideDropdownProps> = ({ anchorRef, statuses, onSelect, onClose }) => {
+  const [pos, setPos] = useState({ top: 0, right: 0 });
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Calculate position relative to the trigger button
+  useEffect(() => {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    setPos({
+      top: rect.bottom + 8,           // 8px gap below button
+      right: window.innerWidth - rect.right, // align right edge
+    });
+  }, [anchorRef]);
+
+  // Close on outside click
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        anchorRef.current &&
+        !anchorRef.current.contains(e.target as Node)
+      ) {
+        onClose();
+      }
+    };
+    const onScroll = () => onClose();
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [onClose, anchorRef]);
+
+  return (
+    // ✅ Fixed positioning: completely outside the DOM stacking context of overflow-hidden parents
+    <div
+      ref={dropdownRef}
+      style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 9999 }}
+      className="min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden"
+    >
+      <div className="py-2">
+        {statuses.map((status) => (
+          <button
+            key={status}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onSelect(status);
+              onClose();
+            }}
+            className="w-full text-left px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150"
+          >
+            {status}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ==================== USER ROW ====================
+interface UserRowProps {
+  u: RealtimeStatus;
+  displayName: string;
+  now: number;
+  settings: AppSettings;
+  onUpdateStatus: (userId: string, status: string) => void;
+  getIdleInfo: (userId: string, fallback?: number) => { idleStartMs: number | null; idleTotalMs: number };
+  formatElapsedTime: (s: number) => string;
+}
+
+const UserRow: React.FC<UserRowProps> = ({
+  u,
+  displayName,
+  now,
+  settings,
+  onUpdateStatus,
+  getIdleInfo,
+  formatElapsedTime,
+}) => {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  const config = getStatusConfig(u.status);
+  const rawActivity = typeof u.activity === 'number' ? u.activity : 2;
+  const lastAt = typeof u.lastActivityAt === 'number'
+    ? u.lastActivityAt
+    : (typeof u.activityUpdatedAt === 'number' ? u.activityUpdatedAt : undefined);
+  const isFresh = typeof lastAt === 'number' && Number.isFinite(lastAt) && (now - lastAt) <= 60_000;
+  const activity = isFresh ? rawActivity : 2;
+
+  const activityDotClass =
+    activity === 1 ? 'bg-emerald-500' :
+    activity === 0 ? 'bg-amber-500' :
+    'bg-slate-400';
+
+  const shouldShowIdle = activity === 0 && u.status === OfficeStatus.AVAILABLE;
+  const idleInfo = shouldShowIdle ? getIdleInfo(u.userId, now) : { idleStartMs: null, idleTotalMs: 0 };
+  const idleElapsedSec = (shouldShowIdle && typeof idleInfo.idleStartMs === 'number')
+    ? Math.max(0, Math.floor((now - idleInfo.idleStartMs) / 1000))
+    : 0;
+
+  const timeSinceUpdate = Math.max(0, Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000));
+
+  return (
+    <div className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200">
+      <div className="flex items-center justify-between gap-4">
+        {/* Avatar + Info */}
+        <div className="flex items-center gap-4 min-w-0 flex-1">
+          <div className={`relative w-12 h-12 rounded-2xl flex items-center justify-center font-semibold text-white shadow-lg ${config.bg || 'bg-gradient-to-br from-slate-600 to-slate-700'}`}>
+            {displayName?.charAt(0).toUpperCase() || 'U'}
+            <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-800`} />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                {displayName || u.userId}
+              </p>
+              {shouldShowIdle && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 text-xs font-semibold whitespace-nowrap">
+                  Idle {formatElapsedTime(idleElapsedSec)}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${config.bg} ${config.color} text-xs font-semibold`}>
+                {React.cloneElement(config.icon as any, { className: 'w-3.5 h-3.5', strokeWidth: 2.5 })}
+                {u.status}
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                <Clock className="w-3.5 h-3.5" strokeWidth={2.5} />
+                {formatElapsedTime(timeSinceUpdate)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Override Button */}
+        <div className="relative flex-shrink-0">
+          <button
+            ref={btnRef}
+            onClick={() => setOpen(v => !v)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-slate-50 dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-xl text-xs font-semibold transition-all duration-200 border border-slate-200/50 dark:border-slate-700/50 opacity-0 group-hover:opacity-100 focus:opacity-100"
+          >
+            <UserCog className="w-4 h-4" strokeWidth={2.5} />
+            Override
+          </button>
+
+          {/* ✅ Fixed dropdown - renders outside overflow-hidden via fixed positioning */}
+          {open && (
+            <OverrideDropdown
+              anchorRef={btnRef}
+              statuses={settings.availableStatuses}
+              onSelect={(status) => onUpdateStatus(u.userId, status)}
+              onClose={() => setOpen(false)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ==================== MAIN COMPONENT ====================
 const LiveMonitor: React.FC<LiveMonitorProps> = ({
   user,
   realtimeStatuses,
@@ -26,7 +200,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
   serverOffsetMs = 0,
 }) => {
   const [now, setNow] = useState(() => Date.now() + serverOffsetMs);
-  const [hoveredUserId, setHoveredUserId] = useState<string | null>(null);
 
   const toISTDateString = (ms: number) => {
     try {
@@ -41,16 +214,20 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     }
   };
 
-  const getIdleInfo = (userId: string, fallbackStartMs?: number) => {
+  const getIdleInfo = useCallback((userId: string, fallbackStartMs?: number) => {
     try {
       const raw = localStorage.getItem('officely_idle_track_v1');
       if (!raw) return { idleStartMs: null as number | null, idleTotalMs: 0 };
       const parsed = JSON.parse(raw);
-      const dayKey = toISTDateString(now);
+      const dayKey = toISTDateString(Date.now() + serverOffsetMs);
       const dayBucket = parsed?.[dayKey];
       const row = dayBucket?.[userId];
-      const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs)) ? row.idleStartMs : null;
-      const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs)) ? row.idleTotalMs : 0;
+      const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs))
+        ? row.idleStartMs
+        : null;
+      const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs))
+        ? row.idleTotalMs
+        : 0;
 
       if (!idleStartMs && typeof fallbackStartMs === 'number' && Number.isFinite(fallbackStartMs)) {
         try {
@@ -66,11 +243,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     } catch (e) {
       return { idleStartMs: null as number | null, idleTotalMs: 0 };
     }
-  };
-
-  useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now() + serverOffsetMs), 1000);
-    return () => clearInterval(interval);
   }, [serverOffsetMs]);
 
   const formatElapsedTime = (seconds: number) => {
@@ -83,6 +255,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     return `${secs}s`;
   };
 
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now() + serverOffsetMs), 1000);
+    return () => clearInterval(interval);
+  }, [serverOffsetMs]);
+
+  // Register self in presence on mount
   useEffect(() => {
     if (!hasSynced) return;
     const self = realtimeStatuses.find((r) => r.userId === user.id);
@@ -97,7 +275,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     }
   }, [user.id, socket, hasSynced, realtimeStatuses]);
 
-  const updateStatus = (targetUserId: string, newStatus: string) => {
+  const updateStatus = useCallback((targetUserId: string, newStatus: string) => {
     let targetUser = users.find(u => u.id === targetUserId);
     if (!targetUser && targetUserId === user.id) targetUser = user;
     if (!targetUser) {
@@ -132,7 +310,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
       const filtered = prev.filter(s => s.userId !== targetUserId);
       return [...filtered, statusData];
     });
-  };
+  }, [users, user, realtimeStatuses, socket, setRealtimeStatuses]);
 
   const visibleUsers = realtimeStatuses.filter((r) => r.userId !== user.id);
 
@@ -144,7 +322,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
   };
 
   return (
-    <div className="space-y-6 pb-24 animate-in fade-in duration-700" style={{ animationFillMode: 'backwards' }}>
+    <div className="space-y-6 pb-24 animate-in fade-in duration-700">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/25">
@@ -161,8 +339,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         </div>
       </div>
 
-      {/* Main Card */}
-      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 overflow-hidden">
+      {/* Main Card — ✅ NO overflow-hidden so rows look clean, dropdown escapes via fixed */}
+      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5">
         {visibleUsers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 px-6">
             <div className="w-20 h-20 rounded-3xl bg-slate-100 dark:bg-slate-900 flex items-center justify-center mb-6">
@@ -172,107 +350,23 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
             <p className="text-sm text-slate-400 dark:text-slate-600">Users will appear here when they're online</p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-700/50 overflow-visible">
+          // ✅ overflow-hidden only on the rows container so first/last rows get rounded corners
+          <div className="divide-y divide-slate-100 dark:divide-slate-700/50 rounded-3xl overflow-hidden">
             {visibleUsers
               .slice()
               .sort((a, b) => getDisplayName(a).localeCompare(getDisplayName(b)))
-              .map((u) => {
-                const config = getStatusConfig(u.status);
-                const displayName = getDisplayName(u);
-                const rawActivity = typeof u.activity === 'number' ? u.activity : 2;
-                const lastAt = typeof u.lastActivityAt === 'number'
-                  ? u.lastActivityAt
-                  : (typeof u.activityUpdatedAt === 'number' ? u.activityUpdatedAt : undefined);
-                const isFresh = typeof lastAt === 'number' && Number.isFinite(lastAt) && (now - lastAt) <= 60_000;
-                const activity = isFresh ? rawActivity : 2;
-                const activityDotClass = activity === 1
-                  ? 'bg-emerald-500'
-                  : activity === 0
-                    ? 'bg-amber-500'
-                    : 'bg-slate-400';
-
-                const shouldShowIdle = activity === 0 && u.status === OfficeStatus.AVAILABLE;
-                const idleInfo = shouldShowIdle ? getIdleInfo(u.userId, now) : { idleStartMs: null as number | null, idleTotalMs: 0 };
-                const idleElapsedSec = (shouldShowIdle && typeof idleInfo.idleStartMs === 'number')
-                  ? Math.max(0, Math.floor((now - idleInfo.idleStartMs) / 1000))
-                  : 0;
-
-                const isHovered = hoveredUserId === u.userId;
-
-                return (
-                  <div 
-                    key={u.userId} 
-                    className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200 relative z-10"
-                    onMouseEnter={() => setHoveredUserId(u.userId)}
-                    onMouseLeave={() => setHoveredUserId(null)}
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      {/* User Info */}
-                      <div className="flex items-center gap-4 min-w-0 flex-1">
-                        {/* Avatar */}
-                        <div className={`relative w-12 h-12 rounded-2xl flex items-center justify-center font-semibold text-white shadow-lg transition-all duration-200 ${config.bg || 'bg-gradient-to-br from-slate-600 to-slate-700'} ${isHovered ? 'scale-110' : 'scale-100'}`}>
-                          {displayName?.charAt(0).toUpperCase() || 'U'}
-                          {/* Activity Indicator */}
-                          <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full ${activityDotClass} ring-2 ring-white dark:ring-slate-800 transition-all duration-200`} />
-                        </div>
-
-                        {/* Name & Status */}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">{displayName || u.userId}</p>
-                            {shouldShowIdle && (
-                              <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 text-xs font-semibold">
-                                Idle {formatElapsedTime(idleElapsedSec)}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${config.bg} ${config.color} text-xs font-semibold`}>
-                              {React.cloneElement(config.icon as any, { className: 'w-3.5 h-3.5', strokeWidth: 2.5 })}
-                              {u.status}
-                            </div>
-                            <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                              <Clock className="w-3.5 h-3.5" strokeWidth={2.5} />
-                              {formatElapsedTime(Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="relative flex-shrink-0">
-                        <button className={`flex items-center gap-2 px-4 py-2.5 bg-slate-50 dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-xl text-xs font-semibold transition-all duration-200 border border-slate-200/50 dark:border-slate-700/50 ${isHovered ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                          <UserCog className="w-4 h-4" strokeWidth={2.5} />
-                          Override
-                        </button>
-
-                        {/* Dropdown Menu with ultra-high z-index */}
-                        {isHovered && (
-                          <>
-                            <div 
-                              className="fixed inset-0 z-[9998]" 
-                              onMouseEnter={() => setHoveredUserId(null)}
-                            />
-                            <div className="absolute right-0 top-full mt-2 min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden z-[9999]">
-                              <div className="py-2">
-                                {settings.availableStatuses.map((status) => (
-                                  <button
-                                    key={status}
-                                    onClick={() => updateStatus(u.userId, status)}
-                                    className="w-full text-left px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150"
-                                  >
-                                    {status}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              .map((u) => (
+                <UserRow
+                  key={u.userId}
+                  u={u}
+                  displayName={getDisplayName(u)}
+                  now={now}
+                  settings={settings}
+                  onUpdateStatus={updateStatus}
+                  getIdleInfo={getIdleInfo}
+                  formatElapsedTime={formatElapsedTime}
+                />
+              ))}
           </div>
         )}
       </div>
