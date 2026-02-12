@@ -183,8 +183,8 @@ const Management: React.FC<ManagementProps> = ({ currentUser, users, setUsers, s
 
                 {isRoleMenuOpen && (
                   <>
-                    <button type="button" onClick={() => setIsRoleMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
-                    <div className="absolute left-0 right-0 mt-2 z-50 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden">
+                    <button type="button" onClick={() => setIsRoleMenuOpen(false)} className="fixed inset-0 z-[9998] bg-black/20 backdrop-blur-sm" />
+                    <div className="absolute left-0 right-0 mt-2 z-[9999] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden">
                       <div className="py-2">
                         <button type="button" onClick={() => { setNewRole(UserRole.STANDARD); setIsRoleMenuOpen(false); }}
                           className={`w-full text-left px-4 py-2.5 text-sm font-medium transition-all duration-150 ${newRole === UserRole.STANDARD ? 'bg-indigo-50 text-indigo-600 dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
