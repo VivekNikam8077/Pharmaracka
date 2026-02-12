@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import { DaySummary, UserRole, User } from '../types';
 import {
   TrendingUp,
@@ -99,42 +100,64 @@ interface CalendarPopupProps {
   value: string;
   onSelect: (v: string) => void;
   onClose: () => void;
+  triggerRef: React.RefObject<HTMLButtonElement>;
 }
 
-const CalendarPopup: React.FC<CalendarPopupProps> = ({ month, onMonthChange, value, onSelect, onClose }) => {
+const CalendarPopup: React.FC<CalendarPopupProps> = ({ month, onMonthChange, value, onSelect, onClose, triggerRef }) => {
   const cells = buildMonthDays(month);
   const valueDate = value ? new Date(value + 'T00:00:00') : null;
-  return (
-    <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[9999] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-200 w-80">
-      <div className="flex items-center justify-between mb-4">
-        <button onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700">
-          <ChevronRight className="w-4 h-4 rotate-180" strokeWidth={2.5} />
-        </button>
-        <span className="text-sm font-semibold text-slate-900 dark:text-white">
-          {month.toLocaleString('default', { month: 'long' })} {month.getFullYear()}
-        </span>
-        <button onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700">
-          <ChevronRight className="w-4 h-4" strokeWidth={2.5} />
-        </button>
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPosition({
+        top: rect.bottom + 8,
+        left: rect.left,
+      });
+    }
+  }, [triggerRef]);
+
+  if (!position) return null;
+
+  return ReactDOM.createPortal(
+    <>
+      <div className="fixed inset-0 z-[9998]" onClick={onClose} />
+      <div 
+        className="fixed z-[9999] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-200 w-80"
+        style={{ top: `${position.top}px`, left: `${position.left}px` }}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <button onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700">
+            <ChevronRight className="w-4 h-4 rotate-180" strokeWidth={2.5} />
+          </button>
+          <span className="text-sm font-semibold text-slate-900 dark:text-white">
+            {month.toLocaleString('default', { month: 'long' })} {month.getFullYear()}
+          </span>
+          <button onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700">
+            <ChevronRight className="w-4 h-4" strokeWidth={2.5} />
+          </button>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-xs font-semibold text-slate-400 dark:text-slate-500 mb-2 text-center">
+          {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <div key={d} className="py-1">{d}</div>)}
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-sm">
+          {cells.map((c, idx) =>
+            c ? (
+              <button key={idx} onClick={() => { onSelect(toDateStr(c)); onClose(); }}
+                className={`w-full aspect-square flex items-center justify-center rounded-lg transition-all duration-150 ${
+                  valueDate && isSameDay(c, valueDate) 
+                    ? 'bg-indigo-600 text-white font-semibold shadow-lg' 
+                    : 'bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600 dark:hover:text-indigo-400'
+                }`}>
+                {c.getDate()}
+              </button>
+            ) : <div key={idx} />
+          )}
+        </div>
       </div>
-      <div className="grid grid-cols-7 gap-1 text-xs font-semibold text-slate-400 dark:text-slate-500 mb-2 text-center">
-        {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <div key={d} className="py-1">{d}</div>)}
-      </div>
-      <div className="grid grid-cols-7 gap-1 text-sm">
-        {cells.map((c, idx) =>
-          c ? (
-            <button key={idx} onClick={() => { onSelect(toDateStr(c)); onClose(); }}
-              className={`w-full aspect-square flex items-center justify-center rounded-lg transition-all duration-150 ${
-                valueDate && isSameDay(c, valueDate) 
-                  ? 'bg-indigo-600 text-white font-semibold shadow-lg' 
-                  : 'bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600 dark:hover:text-indigo-400'
-              }`}>
-              {c.getDate()}
-            </button>
-          ) : <div key={idx} />
-        )}
-      </div>
-    </div>
+    </>,
+    document.body
   );
 };
 
@@ -298,6 +321,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
   const [showEndCal, setShowEndCal] = useState(false);
   const [startMonth, setStartMonth] = useState(new Date());
   const [endMonth, setEndMonth] = useState(new Date());
+  const startButtonRef = useRef<HTMLButtonElement>(null);
+  const endButtonRef = useRef<HTMLButtonElement>(null);
+  const userButtonRef = useRef<HTMLButtonElement>(null);
 
   const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
 
@@ -458,7 +484,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
       </div>
 
       {/* Filters */}
-      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6 overflow-visible">
+      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {isPrivileged && (
             <div className="space-y-2 relative z-10">
@@ -467,15 +493,25 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
                 User
               </label>
               <div className="relative">
-                <button type="button" onClick={() => setIsUserMenuOpen(v => !v)}
+                <button 
+                  ref={userButtonRef}
+                  type="button" 
+                  onClick={() => setIsUserMenuOpen(v => !v)}
                   className="w-full px-4 py-3 bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50 rounded-2xl text-sm font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 flex items-center justify-between">
                   <span className="truncate">{selectedUserId === 'all' ? 'All Users' : (users.find(u => u.id === selectedUserId)?.name || 'Select')}</span>
                   <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isUserMenuOpen ? 'rotate-180' : 'rotate-0'}`} strokeWidth={2.5} />
                 </button>
-                {isUserMenuOpen && (
+                {isUserMenuOpen && userButtonRef.current && ReactDOM.createPortal(
                   <>
-                    <button type="button" onClick={() => setIsUserMenuOpen(false)} className="fixed inset-0 z-[9998] bg-black/20 backdrop-blur-sm" />
-                    <div className="absolute left-0 right-0 mt-2 z-[9999] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden">
+                    <div className="fixed inset-0 z-[9998]" onClick={() => setIsUserMenuOpen(false)} />
+                    <div 
+                      className="fixed z-[9999] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden"
+                      style={{
+                        top: `${userButtonRef.current.getBoundingClientRect().bottom + 8}px`,
+                        left: `${userButtonRef.current.getBoundingClientRect().left}px`,
+                        width: `${userButtonRef.current.getBoundingClientRect().width}px`,
+                      }}
+                    >
                       <div className="max-h-64 overflow-auto py-2">
                         <button type="button" onClick={() => { setSelectedUserId('all'); setIsUserMenuOpen(false); }}
                           className={`w-full text-left px-4 py-2.5 text-sm font-medium transition-all duration-150 ${selectedUserId === 'all' ? 'bg-indigo-50 text-indigo-600 dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
@@ -489,7 +525,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
                         ))}
                       </div>
                     </div>
-                  </>
+                  </>,
+                  document.body
                 )}
               </div>
             </div>
@@ -515,30 +552,44 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
               <div className="space-y-2 relative z-10">
                 <label className="text-xs font-medium text-slate-600 dark:text-slate-400 block">Start Date</label>
                 <div className="relative">
-                  <button type="button" onClick={() => { setShowStartCal(v => !v); setShowEndCal(false); }}
+                  <button 
+                    ref={startButtonRef}
+                    type="button" 
+                    onClick={() => { setShowStartCal(v => !v); setShowEndCal(false); }}
                     className="w-full px-4 py-3 bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50 rounded-2xl text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 text-left font-medium">
                     {startDate || 'Pick date'}
                   </button>
                   {showStartCal && (
-                    <>
-                      <button type="button" className="fixed inset-0 z-[9998] bg-black/20 backdrop-blur-sm" onClick={() => setShowStartCal(false)} />
-                      <CalendarPopup month={startMonth} onMonthChange={setStartMonth} value={startDate} onSelect={v => setStartDate(v)} onClose={() => setShowStartCal(false)} />
-                    </>
+                    <CalendarPopup 
+                      month={startMonth} 
+                      onMonthChange={setStartMonth} 
+                      value={startDate} 
+                      onSelect={v => setStartDate(v)} 
+                      onClose={() => setShowStartCal(false)}
+                      triggerRef={startButtonRef}
+                    />
                   )}
                 </div>
               </div>
               <div className="space-y-2 relative z-10">
                 <label className="text-xs font-medium text-slate-600 dark:text-slate-400 block">End Date</label>
                 <div className="relative">
-                  <button type="button" onClick={() => { setShowEndCal(v => !v); setShowStartCal(false); }}
+                  <button 
+                    ref={endButtonRef}
+                    type="button" 
+                    onClick={() => { setShowEndCal(v => !v); setShowStartCal(false); }}
                     className="w-full px-4 py-3 bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50 rounded-2xl text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 text-left font-medium">
                     {endDate || 'Pick date'}
                   </button>
                   {showEndCal && (
-                    <>
-                      <button type="button" className="fixed inset-0 z-[9998] bg-black/20 backdrop-blur-sm" onClick={() => setShowEndCal(false)} />
-                      <CalendarPopup month={endMonth} onMonthChange={setEndMonth} value={endDate} onSelect={v => setEndDate(v)} onClose={() => setShowEndCal(false)} />
-                    </>
+                    <CalendarPopup 
+                      month={endMonth} 
+                      onMonthChange={setEndMonth} 
+                      value={endDate} 
+                      onSelect={v => setEndDate(v)} 
+                      onClose={() => setShowEndCal(false)}
+                      triggerRef={endButtonRef}
+                    />
                   )}
                 </div>
               </div>
