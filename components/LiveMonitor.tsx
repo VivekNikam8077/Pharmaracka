@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import { Socket } from 'socket.io-client';
 import { User, OfficeStatus, RealtimeStatus, AppSettings } from '../types';
 import { getStatusConfig } from '../constants';
@@ -15,7 +16,10 @@ interface LiveMonitorProps {
   serverOffsetMs?: number;
 }
 
-// ==================== DROPDOWN (fixed-positioned, escapes overflow-hidden) ====================
+// ==================== DROPDOWN (portal into document.body) ====================
+// Why portal: any ancestor with CSS transform (including animate-in, backdrop-blur)
+// breaks position:fixed. Portal renders directly into <body>, escaping ALL parent
+// stacking contexts, transforms, overflow, and filters completely.
 interface OverrideDropdownProps {
   anchorRef: React.RefObject<HTMLButtonElement>;
   statuses: string[];
@@ -24,46 +28,50 @@ interface OverrideDropdownProps {
 }
 
 const OverrideDropdown: React.FC<OverrideDropdownProps> = ({ anchorRef, statuses, onSelect, onClose }) => {
-  const [pos, setPos] = useState({ top: 0, right: 0 });
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Calculate position relative to the trigger button
-  useEffect(() => {
-    if (!anchorRef.current) return;
+  // Calculate pixel-perfect position from the button's viewport rect
+  const getStyle = (): React.CSSProperties => {
+    if (!anchorRef.current) return { position: 'fixed', top: 0, left: 0, zIndex: 99999 };
     const rect = anchorRef.current.getBoundingClientRect();
-    setPos({
-      top: rect.bottom + 8,           // 8px gap below button
-      right: window.innerWidth - rect.right, // align right edge
-    });
-  }, [anchorRef]);
+    const dropdownWidth = 200;
+    // Prefer right-aligned with button; clamp so it doesn't go off-screen left
+    const left = Math.max(8, rect.right - dropdownWidth);
+    return {
+      position: 'fixed',
+      top: rect.bottom + 6,
+      left,
+      width: dropdownWidth,
+      zIndex: 99999,
+    };
+  };
 
-  // Close on outside click
+  // Close on outside click or scroll
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
       if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node) &&
-        anchorRef.current &&
-        !anchorRef.current.contains(e.target as Node)
-      ) {
-        onClose();
-      }
+        dropdownRef.current?.contains(e.target as Node) ||
+        anchorRef.current?.contains(e.target as Node)
+      ) return;
+      onClose();
     };
     const onScroll = () => onClose();
+    const onResize = () => onClose();
     document.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    window.addEventListener('resize', onResize, { passive: true });
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
     };
   }, [onClose, anchorRef]);
 
-  return (
-    // ✅ Fixed positioning: completely outside the DOM stacking context of overflow-hidden parents
+  const menu = (
     <div
       ref={dropdownRef}
-      style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 9999 }}
-      className="min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden"
+      style={getStyle()}
+      className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl overflow-hidden"
     >
       <div className="py-2">
         {statuses.map((status) => (
@@ -82,6 +90,9 @@ const OverrideDropdown: React.FC<OverrideDropdownProps> = ({ anchorRef, statuses
       </div>
     </div>
   );
+
+  // Portal: renders into document.body, completely outside React tree hierarchy
+  return ReactDOM.createPortal(menu, document.body);
 };
 
 // ==================== USER ROW ====================
