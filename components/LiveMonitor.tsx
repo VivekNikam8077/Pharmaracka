@@ -246,20 +246,28 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
                           Override
                         </button>
 
-                        {/* Dropdown Menu - FIXED: Added z-[100] to appear above all content */}
-                        <div className={`absolute right-0 top-full mt-2 min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden transition-all duration-200 z-[100] ${isHovered ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible translate-y-2 pointer-events-none'}`}>
-                          <div className="py-2">
-                            {settings.availableStatuses.map((status) => (
-                              <button
-                                key={status}
-                                onClick={() => updateStatus(u.userId, status)}
-                                className="w-full text-left px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150"
-                              >
-                                {status}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
+                        {/* Dropdown Menu with ultra-high z-index */}
+                        {isHovered && (
+                          <>
+                            <div 
+                              className="fixed inset-0 z-[9998]" 
+                              onMouseEnter={() => setHoveredUserId(null)}
+                            />
+                            <div className="absolute right-0 top-full mt-2 min-w-[200px] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden z-[9999]">
+                              <div className="py-2">
+                                {settings.availableStatuses.map((status) => (
+                                  <button
+                                    key={status}
+                                    onClick={() => updateStatus(u.userId, status)}
+                                    className="w-full text-left px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150"
+                                  >
+                                    {status}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
