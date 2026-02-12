@@ -105,7 +105,7 @@ const CalendarPopup: React.FC<CalendarPopupProps> = ({ month, onMonthChange, val
   const cells = buildMonthDays(month);
   const valueDate = value ? new Date(value + 'T00:00:00') : null;
   return (
-    <div className="absolute left-0 right-0 mt-2 z-50 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-200">
+    <div className="absolute left-0 right-0 mt-2 z-[100] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-200">
       <div className="flex items-center justify-between mb-4">
         <button onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700">
           <ChevronRight className="w-4 h-4 rotate-180" strokeWidth={2.5} />
@@ -363,6 +363,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
       );
     }
 
+    // Debug logging to help troubleshoot
+    console.log('[Analytics] Raw data count:', data.length);
+    console.log('[Analytics] Filtered data count:', result.length);
+    console.log('[Analytics] Current filters:', { range, selectedUserId, search, startDate, endDate });
+    if (result.length > 0) {
+      console.log('[Analytics] Sample data:', result[0]);
+    }
+
     return result.sort((a, b) => a.date.localeCompare(b.date));
   }, [data, range, startDate, endDate, search, user, users, isPrivileged, selectedUserId]);
 
@@ -450,10 +458,10 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
       </div>
 
       {/* Filters */}
-      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
+      <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6 overflow-visible">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {isPrivileged && (
-            <div className="space-y-2">
+            <div className="space-y-2 relative z-10">
               <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
                 <UsersIcon className="w-3.5 h-3.5" strokeWidth={2.5} />
                 User
@@ -467,7 +475,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
                 {isUserMenuOpen && (
                   <>
                     <button type="button" onClick={() => setIsUserMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
-                    <div className="absolute left-0 right-0 mt-2 z-50 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden">
+                    <div className="absolute left-0 right-0 mt-2 z-[100] bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden">
                       <div className="max-h-64 overflow-auto py-2">
                         <button type="button" onClick={() => { setSelectedUserId('all'); setIsUserMenuOpen(false); }}
                           className={`w-full text-left px-4 py-2.5 text-sm font-medium transition-all duration-150 ${selectedUserId === 'all' ? 'bg-indigo-50 text-indigo-600 dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
@@ -504,7 +512,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
 
           {range === 'Custom' && (
             <>
-              <div className="space-y-2">
+              <div className="space-y-2 relative z-10">
                 <label className="text-xs font-medium text-slate-600 dark:text-slate-400 block">Start Date</label>
                 <div className="relative">
                   <button type="button" onClick={() => { setShowStartCal(v => !v); setShowEndCal(false); }}
@@ -519,7 +527,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
                   )}
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2 relative z-10">
                 <label className="text-xs font-medium text-slate-600 dark:text-slate-400 block">End Date</label>
                 <div className="relative">
                   <button type="button" onClick={() => { setShowEndCal(v => !v); setShowStartCal(false); }}
@@ -603,7 +611,20 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
                   <td colSpan={selectedUserId === 'all' ? 7 : 6} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center">
                       <LineChartIcon className="w-12 h-12 text-slate-300 dark:text-slate-700 mb-3" strokeWidth={2} />
-                      <p className="text-sm font-medium text-slate-400 dark:text-slate-600">No data available</p>
+                      <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1">No activity data found</p>
+                      <p className="text-xs text-slate-400 dark:text-slate-600">
+                        {data.length === 0 
+                          ? 'No data has been recorded yet. Data will appear after users log in and use the system.'
+                          : 'Try adjusting your filters or date range to see more data.'}
+                      </p>
+                      {data.length > 0 && filteredData.length === 0 && (
+                        <button 
+                          onClick={() => { setRange('All'); setSearch(''); setSelectedUserId('all'); }}
+                          className="mt-3 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-all duration-200"
+                        >
+                          Clear Filters
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
