@@ -27,6 +27,7 @@ interface DashboardProps {
 const STORAGE_KEY_PREFIX = 'officely_session_';
 const SESSION_STATS_KEY = 'officely_session_stats_';
 const IDLE_TRACK_KEY = 'officely_idle_track_v1';
+const TIME_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes in milliseconds
 
 interface SessionStats {
   date: string;
@@ -64,6 +65,7 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   const statusChangeTimeRef = useRef<number>(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const periodicUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const toISTDateString = (d: Date): string => {
     try {
@@ -112,6 +114,91 @@ const Dashboard: React.FC<DashboardProps> = ({
       crossUtilMinutes: 0,
     };
   };
+
+  // ✅ NEW: Function to send periodic time updates to server
+  const sendPeriodicUpdate = () => {
+    if (!socket || !socket.connected || !sessionStartTime) {
+      console.log('[Dashboard] Skipping periodic update - not connected or no session');
+      return;
+    }
+
+    const now = Date.now() + serverOffsetMs;
+    const today = toISTDateString(new Date(now));
+    
+    // Calculate current session stats including ongoing time
+    const sessionStats = loadSessionStats(today);
+    const timeInCurrentStatus = Math.floor((now - statusChangeTimeRef.current) / 60000);
+    
+    // Create updated stats object
+    const updatedStats = { ...sessionStats };
+    
+    // Add current ongoing time to appropriate category
+    switch (currentStatus) {
+      case OfficeStatus.AVAILABLE:
+        updatedStats.productiveMinutes += timeInCurrentStatus;
+        break;
+      case OfficeStatus.LUNCH:
+        updatedStats.lunchMinutes += timeInCurrentStatus;
+        break;
+      case OfficeStatus.SNACKS:
+        updatedStats.snacksMinutes += timeInCurrentStatus;
+        break;
+      case OfficeStatus.REFRESHMENT_BREAK:
+        updatedStats.refreshmentMinutes += timeInCurrentStatus;
+        break;
+      case OfficeStatus.QUALITY_FEEDBACK:
+        updatedStats.feedbackMinutes += timeInCurrentStatus;
+        break;
+      case OfficeStatus.CROSS_UTILIZATION:
+        updatedStats.crossUtilMinutes += timeInCurrentStatus;
+        break;
+    }
+
+    // Emit current status with updated time to server
+    socket.emit('status_change', {
+      userId: user.id,
+      userName: user.name,
+      status: currentStatus,
+      role: user.role,
+      activity: 1,
+      periodicUpdate: true, // Flag to indicate this is a time sync update
+      currentMinutes: updatedStats,
+    });
+
+    console.log('[Dashboard] ⏰ Sent periodic 5-minute update:', {
+      status: currentStatus,
+      timeInStatus: timeInCurrentStatus,
+      totalProductive: updatedStats.productiveMinutes
+    });
+  };
+
+  // ✅ Set up 5-minute periodic updates
+  useEffect(() => {
+    if (!socket || !sessionStartTime) return;
+
+    console.log('[Dashboard] 🔄 Setting up 5-minute periodic update timer');
+
+    // Clear any existing interval
+    if (periodicUpdateRef.current) {
+      clearInterval(periodicUpdateRef.current);
+    }
+
+    // Send immediate update on mount
+    sendPeriodicUpdate();
+
+    // Set up 5-minute interval
+    periodicUpdateRef.current = setInterval(() => {
+      sendPeriodicUpdate();
+    }, TIME_UPDATE_INTERVAL);
+
+    return () => {
+      if (periodicUpdateRef.current) {
+        console.log('[Dashboard] 🛑 Clearing periodic update timer');
+        clearInterval(periodicUpdateRef.current);
+        periodicUpdateRef.current = null;
+      }
+    };
+  }, [socket, sessionStartTime, currentStatus, user.id, user.name, user.role, serverOffsetMs]);
 
   // ✅ Fixed: Now properly emits initial status when socket connects
   useEffect(() => {
@@ -480,7 +567,7 @@ const Dashboard: React.FC<DashboardProps> = ({
           Welcome back, {user.name}! 👋
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Track your productivity and manage your status
+          Track your productivity and manage your status • Auto-sync every 5 minutes
         </p>
       </div>
 
