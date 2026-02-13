@@ -37,6 +37,7 @@ interface SessionStats {
   refreshmentMinutes: number;
   feedbackMinutes: number;
   crossUtilMinutes: number;
+  lastSavedAt: number; // ✅ NEW: Track when we last saved to prevent double-counting
 }
 
 const Dashboard: React.FC<DashboardProps> = ({
@@ -83,10 +84,16 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
+  // ✅ FIXED: Save with timestamp to prevent double-counting
   const saveSessionStats = (stats: SessionStats) => {
     const statsKey = `${SESSION_STATS_KEY}${user.id}`;
     try {
-      localStorage.setItem(statsKey, JSON.stringify(stats));
+      const toSave = {
+        ...stats,
+        lastSavedAt: Date.now() + serverOffsetMs
+      };
+      localStorage.setItem(statsKey, JSON.stringify(toSave));
+      console.log('[Dashboard] 💾 Saved stats:', toSave);
     } catch (e) {
       console.error('[Dashboard] Failed to save session stats:', e);
     }
@@ -98,7 +105,10 @@ const Dashboard: React.FC<DashboardProps> = ({
       const stored = localStorage.getItem(statsKey);
       if (stored) {
         const stats: SessionStats = JSON.parse(stored);
-        if (stats.date === today) return stats;
+        if (stats.date === today) {
+          console.log('[Dashboard] 📂 Loaded stats:', stats);
+          return stats;
+        }
       }
     } catch (e) {
       console.error('[Dashboard] Failed to load session stats:', e);
@@ -112,7 +122,13 @@ const Dashboard: React.FC<DashboardProps> = ({
       refreshmentMinutes: 0,
       feedbackMinutes: 0,
       crossUtilMinutes: 0,
+      lastSavedAt: Date.now() + serverOffsetMs
     };
+  };
+
+  // ✅ FIXED: Get current session minutes without modifying stored stats
+  const getCurrentSessionMinutes = (now: number): number => {
+    return Math.floor((now - statusChangeTimeRef.current) / 60000);
   };
 
   // ✅ NEW: Function to send periodic time updates to server
@@ -125,50 +141,26 @@ const Dashboard: React.FC<DashboardProps> = ({
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
-    // Calculate current session stats including ongoing time
+    // Load saved stats (these are the finalized minutes from completed status periods)
     const sessionStats = loadSessionStats(today);
-    const timeInCurrentStatus = Math.floor((now - statusChangeTimeRef.current) / 60000);
     
-    // Create updated stats object
-    const updatedStats = { ...sessionStats };
+    // Get current ongoing time (NOT saved yet)
+    const currentSessionMinutes = getCurrentSessionMinutes(now);
     
-    // Add current ongoing time to appropriate category
-    switch (currentStatus) {
-      case OfficeStatus.AVAILABLE:
-        updatedStats.productiveMinutes += timeInCurrentStatus;
-        break;
-      case OfficeStatus.LUNCH:
-        updatedStats.lunchMinutes += timeInCurrentStatus;
-        break;
-      case OfficeStatus.SNACKS:
-        updatedStats.snacksMinutes += timeInCurrentStatus;
-        break;
-      case OfficeStatus.REFRESHMENT_BREAK:
-        updatedStats.refreshmentMinutes += timeInCurrentStatus;
-        break;
-      case OfficeStatus.QUALITY_FEEDBACK:
-        updatedStats.feedbackMinutes += timeInCurrentStatus;
-        break;
-      case OfficeStatus.CROSS_UTILIZATION:
-        updatedStats.crossUtilMinutes += timeInCurrentStatus;
-        break;
-    }
-
-    // Emit current status with updated time to server
+    console.log('[Dashboard] ⏰ Periodic update:', {
+      status: currentStatus,
+      saved: sessionStats,
+      currentOngoing: currentSessionMinutes
+    });
+    
+    // Emit current status with time to server
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
       status: currentStatus,
       role: user.role,
       activity: 1,
-      periodicUpdate: true, // Flag to indicate this is a time sync update
-      currentMinutes: updatedStats,
-    });
-
-    console.log('[Dashboard] ⏰ Sent periodic 5-minute update:', {
-      status: currentStatus,
-      timeInStatus: timeInCurrentStatus,
-      totalProductive: updatedStats.productiveMinutes
+      periodicUpdate: true,
     });
   };
 
@@ -220,6 +212,12 @@ const Dashboard: React.FC<DashboardProps> = ({
           setCurrentStatus(data.status || OfficeStatus.AVAILABLE);
           statusChangeTimeRef.current = data.statusChangeTime || data.startTime;
           initialStatus = data.status || OfficeStatus.AVAILABLE;
+          
+          console.log('[Dashboard] 📋 Restored session:', {
+            status: initialStatus,
+            startTime: new Date(data.startTime).toLocaleTimeString(),
+            statusChangeTime: new Date(statusChangeTimeRef.current).toLocaleTimeString()
+          });
         } else {
           const newStartTime = now;
           setSessionStartTime(newStartTime);
@@ -241,7 +239,10 @@ const Dashboard: React.FC<DashboardProps> = ({
             refreshmentMinutes: 0,
             feedbackMinutes: 0,
             crossUtilMinutes: 0,
+            lastSavedAt: now
           });
+          
+          console.log('[Dashboard] 🆕 New session started');
         }
       } catch (e) {
         console.error('[Dashboard] Failed to restore session:', e);
@@ -267,10 +268,13 @@ const Dashboard: React.FC<DashboardProps> = ({
         refreshmentMinutes: 0,
         feedbackMinutes: 0,
         crossUtilMinutes: 0,
+        lastSavedAt: now
       });
+      
+      console.log('[Dashboard] 🆕 New session started');
     }
     
-    // ✅ CRITICAL FIX: Emit initial status to socket so LiveMonitor can see this user
+    // Emit initial status to socket so LiveMonitor can see this user
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
@@ -282,6 +286,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     console.log('[Dashboard] ✅ Emitted initial status:', initialStatus, 'for user:', user.name);
   }, [user.id, user.name, user.role, serverOffsetMs, socket, hasSynced]);
 
+  // Save session data to localStorage whenever it changes
   useEffect(() => {
     if (!sessionStartTime) return;
     
@@ -296,6 +301,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     }));
   }, [currentStatus, sessionStartTime, user.id, serverOffsetMs]);
 
+  // Update elapsed time timer
   useEffect(() => {
     if (!sessionStartTime) return;
 
@@ -316,6 +322,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
   }, [sessionStartTime, serverOffsetMs]);
 
+  // ✅ FIXED: Calculate stats for display WITHOUT modifying stored values
   useEffect(() => {
     if (!sessionStartTime) return;
 
@@ -323,8 +330,13 @@ const Dashboard: React.FC<DashboardProps> = ({
       const currentTime = Date.now() + serverOffsetMs;
       const todayDate = toISTDateString(new Date(currentTime));
       
+      // Load SAVED stats (these are finalized from completed status periods)
       const sessionStats = loadSessionStats(todayDate);
       
+      // Calculate CURRENT ongoing session time
+      const currentSessionMinutes = getCurrentSessionMinutes(currentTime);
+      
+      // Create display stats by ADDING current session to saved stats
       let stats = {
         productiveMinutes: sessionStats.productiveMinutes,
         lunchMinutes: sessionStats.lunchMinutes,
@@ -336,29 +348,29 @@ const Dashboard: React.FC<DashboardProps> = ({
         idleMinutes: 0,
       };
 
-      const currentSessionDuration = Math.floor((currentTime - statusChangeTimeRef.current) / 60000);
-      
+      // Add CURRENT ongoing time to the appropriate category
       switch (currentStatus) {
         case OfficeStatus.AVAILABLE:
-          stats.productiveMinutes += currentSessionDuration;
+          stats.productiveMinutes += currentSessionMinutes;
           break;
         case OfficeStatus.LUNCH:
-          stats.lunchMinutes += currentSessionDuration;
+          stats.lunchMinutes += currentSessionMinutes;
           break;
         case OfficeStatus.SNACKS:
-          stats.snacksMinutes += currentSessionDuration;
+          stats.snacksMinutes += currentSessionMinutes;
           break;
         case OfficeStatus.REFRESHMENT_BREAK:
-          stats.refreshmentMinutes += currentSessionDuration;
+          stats.refreshmentMinutes += currentSessionMinutes;
           break;
         case OfficeStatus.QUALITY_FEEDBACK:
-          stats.feedbackMinutes += currentSessionDuration;
+          stats.feedbackMinutes += currentSessionMinutes;
           break;
         case OfficeStatus.CROSS_UTILIZATION:
-          stats.crossUtilMinutes += currentSessionDuration;
+          stats.crossUtilMinutes += currentSessionMinutes;
           break;
       }
 
+      // Calculate idle time
       try {
         const idleStore = JSON.parse(localStorage.getItem(IDLE_TRACK_KEY) || '{}');
         const dayBucket = idleStore[todayDate] || {};
@@ -375,6 +387,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         console.error('[Dashboard] Failed to get idle data:', e);
       }
 
+      // Calculate total
       stats.totalMinutes = stats.productiveMinutes + stats.lunchMinutes + stats.snacksMinutes +
         stats.refreshmentMinutes + stats.feedbackMinutes + stats.crossUtilMinutes;
 
@@ -385,8 +398,9 @@ const Dashboard: React.FC<DashboardProps> = ({
     const interval = setInterval(calculateStats, 1000);
     
     return () => clearInterval(interval);
-  }, [sessionStartTime, currentStatus, statusChangeTimeRef.current, user.id, serverOffsetMs]);
+  }, [sessionStartTime, currentStatus, user.id, serverOffsetMs]);
 
+  // ✅ FIXED: Handle status change WITHOUT race conditions
   const handleStatusChange = (newStatus: OfficeStatus) => {
     if (!socket || !socket.connected) {
       alert('Not connected to server. Please wait...');
@@ -398,34 +412,49 @@ const Dashboard: React.FC<DashboardProps> = ({
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
-    const timeInCurrentStatus = Math.floor((now - statusChangeTimeRef.current) / 60000);
+    // Calculate time spent in OLD status
+    const timeInOldStatus = getCurrentSessionMinutes(now);
+    
+    // Load existing stats
     const sessionStats = loadSessionStats(today);
     
+    console.log('[Dashboard] 🔄 Status change:', {
+      from: currentStatus,
+      to: newStatus,
+      minutes: timeInOldStatus,
+      before: sessionStats
+    });
+    
+    // Add time from old status to appropriate category
     switch (currentStatus) {
       case OfficeStatus.AVAILABLE:
-        sessionStats.productiveMinutes += timeInCurrentStatus;
+        sessionStats.productiveMinutes += timeInOldStatus;
         break;
       case OfficeStatus.LUNCH:
-        sessionStats.lunchMinutes += timeInCurrentStatus;
+        sessionStats.lunchMinutes += timeInOldStatus;
         break;
       case OfficeStatus.SNACKS:
-        sessionStats.snacksMinutes += timeInCurrentStatus;
+        sessionStats.snacksMinutes += timeInOldStatus;
         break;
       case OfficeStatus.REFRESHMENT_BREAK:
-        sessionStats.refreshmentMinutes += timeInCurrentStatus;
+        sessionStats.refreshmentMinutes += timeInOldStatus;
         break;
       case OfficeStatus.QUALITY_FEEDBACK:
-        sessionStats.feedbackMinutes += timeInCurrentStatus;
+        sessionStats.feedbackMinutes += timeInOldStatus;
         break;
       case OfficeStatus.CROSS_UTILIZATION:
-        sessionStats.crossUtilMinutes += timeInCurrentStatus;
+        sessionStats.crossUtilMinutes += timeInOldStatus;
         break;
     }
     
+    // Save updated stats
     saveSessionStats(sessionStats);
+    
+    // Update state
     setCurrentStatus(newStatus);
     statusChangeTimeRef.current = now;
     
+    // Emit to server
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
@@ -434,9 +463,10 @@ const Dashboard: React.FC<DashboardProps> = ({
       activity: 1,
     });
     
-    console.log('[Dashboard] Status changed to:', newStatus);
+    console.log('[Dashboard] ✅ Status changed successfully');
   };
 
+  // Listen for status updates from server
   useEffect(() => {
     const myStatus = realtimeStatuses.find(s => s.userId === user.id);
     if (!myStatus || myStatus.status === currentStatus) return;
@@ -445,27 +475,37 @@ const Dashboard: React.FC<DashboardProps> = ({
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
-    const timeInCurrentStatus = Math.floor((now - statusChangeTimeRef.current) / 60000);
+    // Calculate time in old status
+    const timeInOldStatus = getCurrentSessionMinutes(now);
+    
+    // Load stats
     const sessionStats = loadSessionStats(today);
     
+    console.log('[Dashboard] 📡 Server status update:', {
+      from: currentStatus,
+      to: newStatus,
+      minutes: timeInOldStatus
+    });
+    
+    // Add time to old status
     switch (currentStatus) {
       case OfficeStatus.AVAILABLE:
-        sessionStats.productiveMinutes += timeInCurrentStatus;
+        sessionStats.productiveMinutes += timeInOldStatus;
         break;
       case OfficeStatus.LUNCH:
-        sessionStats.lunchMinutes += timeInCurrentStatus;
+        sessionStats.lunchMinutes += timeInOldStatus;
         break;
       case OfficeStatus.SNACKS:
-        sessionStats.snacksMinutes += timeInCurrentStatus;
+        sessionStats.snacksMinutes += timeInOldStatus;
         break;
       case OfficeStatus.REFRESHMENT_BREAK:
-        sessionStats.refreshmentMinutes += timeInCurrentStatus;
+        sessionStats.refreshmentMinutes += timeInOldStatus;
         break;
       case OfficeStatus.QUALITY_FEEDBACK:
-        sessionStats.feedbackMinutes += timeInCurrentStatus;
+        sessionStats.feedbackMinutes += timeInOldStatus;
         break;
       case OfficeStatus.CROSS_UTILIZATION:
-        sessionStats.crossUtilMinutes += timeInCurrentStatus;
+        sessionStats.crossUtilMinutes += timeInOldStatus;
         break;
     }
     
@@ -473,10 +513,10 @@ const Dashboard: React.FC<DashboardProps> = ({
     setCurrentStatus(newStatus);
     statusChangeTimeRef.current = now;
     
-    console.log('[Dashboard] Status updated from server:', newStatus);
+    console.log('[Dashboard] ✅ Server status applied');
   }, [realtimeStatuses, user.id, currentStatus, serverOffsetMs]);
 
-  // ✅ Listen for server command to clear idle data
+  // Listen for server command to clear idle data
   useEffect(() => {
     if (!socket) return;
 
