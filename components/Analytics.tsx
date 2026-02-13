@@ -53,13 +53,30 @@ const toDateStr = (d: Date): string => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-const isHoliday = (loginTime?: string, logoutTime?: string): boolean => {
-  if (!loginTime || !logoutTime) return true;
-  const login = loginTime.trim();
-  const logout = logoutTime.trim();
+// ✅ FIXED: Better holiday detection
+const isHoliday = (summary: DaySummary): boolean => {
+  // Check if explicitly marked as leave
+  if (summary.isLeave) return true;
+  
+  // Check if there's any activity at all
+  const totalActivity = (summary.productiveMinutes || 0) + 
+                        (summary.lunchMinutes || 0) + 
+                        (summary.snacksMinutes || 0) + 
+                        (summary.refreshmentMinutes || 0) + 
+                        (summary.feedbackMinutes || 0) + 
+                        (summary.crossUtilMinutes || 0);
+  
+  // If there's ANY activity, it's not a holiday
+  if (totalActivity > 0) return false;
+  
+  // Check for invalid or missing login/logout times
+  const login = (summary.loginTime || '').trim();
+  const logout = (summary.logoutTime || '').trim();
+  
   if (!login || !logout) return true;
   if (login === '00:00' && logout === '00:00') return true;
   if (login === '00:00:00' && logout === '00:00:00') return true;
+  
   return false;
 };
 
@@ -389,13 +406,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
       );
     }
 
-    // Debug logging to help troubleshoot
-    console.log('[Analytics] Raw data count:', data.length);
-    console.log('[Analytics] Filtered data count:', result.length);
-    console.log('[Analytics] Current filters:', { range, selectedUserId, search, startDate, endDate });
-    if (result.length > 0) {
-      console.log('[Analytics] Sample data:', result[0]);
-    }
+    console.log('[Analytics] Filtered data:', {
+      total: data.length,
+      filtered: result.length,
+      range,
+      selectedUserId,
+      sample: result[0]
+    });
 
     return result.sort((a, b) => a.date.localeCompare(b.date));
   }, [data, range, startDate, endDate, search, user, users, isPrivileged, selectedUserId]);
@@ -433,8 +450,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
     const rows = filteredData.map(d => {
       const idle = getIdleMinutes(d.userId, d.date);
       const actual = Math.max(0, (d.productiveMinutes || 0) - idle);
-      const login = isHoliday(d.loginTime, d.logoutTime) ? 'Holiday' : d.loginTime;
-      const logout = isHoliday(d.loginTime, d.logoutTime) ? 'Holiday' : d.logoutTime;
+      const holiday = isHoliday(d);
+      const login = holiday ? 'Holiday' : (d.loginTime || '—');
+      const logout = holiday ? 'Holiday' : (d.logoutTime || '—');
       return [getUserName(d.userId), d.date, login, logout, formatHnM(idle), formatHnM(actual), formatHnM(d.lunchMinutes), formatHnM(d.snacksMinutes), formatHnM(d.refreshmentMinutes), formatHnM(d.feedbackMinutes), formatHnM(d.crossUtilMinutes), formatHnM(d.totalMinutes)];
     });
     const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
@@ -682,7 +700,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
               ) : (
                 filteredData.slice().sort((a, b) => b.date.localeCompare(a.date)).map((d, idx) => {
                   const breakMins = (d.lunchMinutes || 0) + (d.snacksMinutes || 0) + (d.refreshmentMinutes || 0);
-                  const holiday = isHoliday(d.loginTime, d.logoutTime);
+                  const holiday = isHoliday(d);
                   
                   return (
                     <tr key={`${d.userId}-${d.date}-${idx}`} className={`hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors duration-150 ${holiday ? 'bg-amber-50/30 dark:bg-amber-900/10' : ''}`}>
