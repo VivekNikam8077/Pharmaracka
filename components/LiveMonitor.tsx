@@ -16,10 +16,6 @@ interface LiveMonitorProps {
   serverOffsetMs?: number;
 }
 
-// ==================== DROPDOWN (portal into document.body) ====================
-// Why portal: any ancestor with CSS transform (including animate-in, backdrop-blur)
-// breaks position:fixed. Portal renders directly into <body>, escaping ALL parent
-// stacking contexts, transforms, overflow, and filters completely.
 interface OverrideDropdownProps {
   anchorRef: React.RefObject<HTMLButtonElement>;
   statuses: string[];
@@ -30,12 +26,10 @@ interface OverrideDropdownProps {
 const OverrideDropdown: React.FC<OverrideDropdownProps> = ({ anchorRef, statuses, onSelect, onClose }) => {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Calculate pixel-perfect position from the button's viewport rect
   const getStyle = (): React.CSSProperties => {
     if (!anchorRef.current) return { position: 'fixed', top: 0, left: 0, zIndex: 99999 };
     const rect = anchorRef.current.getBoundingClientRect();
     const dropdownWidth = 200;
-    // Prefer right-aligned with button; clamp so it doesn't go off-screen left
     const left = Math.max(8, rect.right - dropdownWidth);
     return {
       position: 'fixed',
@@ -46,7 +40,6 @@ const OverrideDropdown: React.FC<OverrideDropdownProps> = ({ anchorRef, statuses
     };
   };
 
-  // Close on outside click or scroll
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
       if (
@@ -91,11 +84,9 @@ const OverrideDropdown: React.FC<OverrideDropdownProps> = ({ anchorRef, statuses
     </div>
   );
 
-  // Portal: renders into document.body, completely outside React tree hierarchy
   return ReactDOM.createPortal(menu, document.body);
 };
 
-// ==================== USER ROW ====================
 interface UserRowProps {
   u: RealtimeStatus;
   displayName: string;
@@ -133,6 +124,8 @@ const UserRow: React.FC<UserRowProps> = ({
 
   const shouldShowIdle = activity === 0 && u.status === OfficeStatus.AVAILABLE;
   const idleInfo = shouldShowIdle ? getIdleInfo(u.userId, now) : { idleStartMs: null, idleTotalMs: 0 };
+  
+  // ✅ FIXED: Calculate idle time properly
   const idleElapsedSec = (shouldShowIdle && typeof idleInfo.idleStartMs === 'number')
     ? Math.max(0, Math.floor((now - idleInfo.idleStartMs) / 1000))
     : 0;
@@ -184,7 +177,6 @@ const UserRow: React.FC<UserRowProps> = ({
             Override
           </button>
 
-          {/* ✅ Fixed dropdown - renders outside overflow-hidden via fixed positioning */}
           {open && (
             <OverrideDropdown
               anchorRef={btnRef}
@@ -199,7 +191,6 @@ const UserRow: React.FC<UserRowProps> = ({
   );
 };
 
-// ==================== MAIN COMPONENT ====================
 const LiveMonitor: React.FC<LiveMonitorProps> = ({
   user,
   realtimeStatuses,
@@ -225,14 +216,17 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     }
   };
 
+  // ✅ FIXED: Properly handle idle tracking with cleanup when user becomes active
   const getIdleInfo = useCallback((userId: string, fallbackStartMs?: number) => {
     try {
       const raw = localStorage.getItem('officely_idle_track_v1');
       if (!raw) return { idleStartMs: null as number | null, idleTotalMs: 0 };
+      
       const parsed = JSON.parse(raw);
       const dayKey = toISTDateString(Date.now() + serverOffsetMs);
       const dayBucket = parsed?.[dayKey];
       const row = dayBucket?.[userId];
+      
       const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs))
         ? row.idleStartMs
         : null;
@@ -240,6 +234,37 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         ? row.idleTotalMs
         : 0;
 
+      // ✅ CRITICAL FIX: Check if user is currently active
+      const userStatus = realtimeStatuses.find(s => s.userId === userId);
+      const isActive = userStatus?.activity === 1;
+      
+      // ✅ If user is active, clear idleStartMs to prevent showing old idle time
+      if (isActive && idleStartMs !== null) {
+        console.log(`[LiveMonitor] 🔄 User ${userId} is now active, clearing idle start time`);
+        
+        try {
+          const store = parsed && typeof parsed === 'object' ? parsed : {};
+          const bucket = store?.[dayKey] && typeof store[dayKey] === 'object' ? store[dayKey] : {};
+          
+          // Clear idleStartMs since user is active
+          bucket[userId] = { 
+            ...(bucket[userId] || {}), 
+            idleStartMs: null, // ✅ Clear the start time
+            idleTotalMs // Keep the accumulated total
+          };
+          
+          store[dayKey] = bucket;
+          localStorage.setItem('officely_idle_track_v1', JSON.stringify(store));
+          
+          console.log(`[LiveMonitor] ✅ Cleared idle start for ${userId}`);
+        } catch (err) {
+          console.error('[LiveMonitor] Failed to clear idle start:', err);
+        }
+        
+        return { idleStartMs: null, idleTotalMs };
+      }
+
+      // If we have a fallback and no current idleStartMs, use fallback
       if (!idleStartMs && typeof fallbackStartMs === 'number' && Number.isFinite(fallbackStartMs)) {
         try {
           const store = parsed && typeof parsed === 'object' ? parsed : {};
@@ -250,11 +275,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         } catch (err) {}
         return { idleStartMs: fallbackStartMs, idleTotalMs };
       }
+      
       return { idleStartMs, idleTotalMs };
     } catch (e) {
       return { idleStartMs: null as number | null, idleTotalMs: 0 };
     }
-  }, [serverOffsetMs]);
+  }, [serverOffsetMs, realtimeStatuses]);
 
   const formatElapsedTime = (seconds: number) => {
     if (!seconds || seconds < 0) return '0s';
@@ -271,7 +297,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     return () => clearInterval(interval);
   }, [serverOffsetMs]);
 
-  // Register self in presence on mount
   useEffect(() => {
     if (!hasSynced) return;
     const self = realtimeStatuses.find((r) => r.userId === user.id);
@@ -284,7 +309,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         activity: 1,
       });
     }
-  }, [user.id, socket, hasSynced, realtimeStatuses]);
+  }, [user.id, socket, hasSynced, realtimeStatuses, user.name, user.role]);
 
   const updateStatus = useCallback((targetUserId: string, newStatus: string) => {
     let targetUser = users.find(u => u.id === targetUserId);
@@ -350,7 +375,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         </div>
       </div>
 
-      {/* Main Card — ✅ NO overflow-hidden so rows look clean, dropdown escapes via fixed */}
+      {/* Main Card */}
       <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5">
         {visibleUsers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 px-6">
@@ -361,7 +386,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
             <p className="text-sm text-slate-400 dark:text-slate-600">Users will appear here when they're online</p>
           </div>
         ) : (
-          // ✅ overflow-hidden only on the rows container so first/last rows get rounded corners
           <div className="divide-y divide-slate-100 dark:divide-slate-700/50 rounded-3xl overflow-hidden">
             {visibleUsers
               .slice()
