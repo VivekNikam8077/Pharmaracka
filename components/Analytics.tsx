@@ -85,19 +85,50 @@ const getLocalSessionAsDaySummary = (
     const statsRaw = localStorage.getItem(statsKey);
     const sessionRaw = localStorage.getItem(sessionKey);
     
-    if (!statsRaw || !sessionRaw) return null;
+    console.log('[Analytics] 🔍 Reading local storage:', {
+      userId,
+      statsKey,
+      sessionKey,
+      hasStats: !!statsRaw,
+      hasSession: !!sessionRaw
+    });
+    
+    if (!statsRaw || !sessionRaw) {
+      console.warn('[Analytics] ⚠️ Missing local storage data');
+      return null;
+    }
     
     const stats = JSON.parse(statsRaw);
     const session = JSON.parse(sessionRaw);
     
+    console.log('[Analytics] 📦 Parsed data:', {
+      stats,
+      session
+    });
+    
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
-    if (stats.date !== today || session.date !== today) return null;
+    if (stats.date !== today || session.date !== today) {
+      console.warn('[Analytics] ⚠️ Date mismatch:', {
+        statsDate: stats.date,
+        sessionDate: session.date,
+        today
+      });
+      return null;
+    }
     
     const statusChangeTime = session.statusChangeTime || session.startTime;
     const currentSessionMinutes = Math.floor((now - statusChangeTime) / 60000);
     const currentStatus = session.status || 'AVAILABLE';
+    
+    console.log('[Analytics] ⏱️ Time calculation:', {
+      now,
+      statusChangeTime,
+      timeDiff: now - statusChangeTime,
+      currentSessionMinutes,
+      currentStatus
+    });
     
     let productiveMinutes = stats.productiveMinutes || 0;
     let lunchMinutes = stats.lunchMinutes || 0;
@@ -106,25 +137,42 @@ const getLocalSessionAsDaySummary = (
     let feedbackMinutes = stats.feedbackMinutes || 0;
     let crossUtilMinutes = stats.crossUtilMinutes || 0;
     
+    console.log('[Analytics] 📊 Stored stats:', {
+      productiveMinutes,
+      lunchMinutes,
+      snacksMinutes,
+      refreshmentMinutes,
+      feedbackMinutes,
+      crossUtilMinutes
+    });
+    
     switch (currentStatus) {
       case 'AVAILABLE':
         productiveMinutes += currentSessionMinutes;
+        console.log('[Analytics] ✅ AVAILABLE - Adding to productive:', currentSessionMinutes);
         break;
       case 'LUNCH':
         lunchMinutes += currentSessionMinutes;
+        console.log('[Analytics] 🍔 LUNCH - Adding to lunch:', currentSessionMinutes);
         break;
       case 'SNACKS':
         snacksMinutes += currentSessionMinutes;
+        console.log('[Analytics] 🍪 SNACKS - Adding to snacks:', currentSessionMinutes);
         break;
       case 'REFRESHMENT_BREAK':
         refreshmentMinutes += currentSessionMinutes;
+        console.log('[Analytics] ☕ BREAK - Adding to refreshment:', currentSessionMinutes);
         break;
       case 'QUALITY_FEEDBACK':
         feedbackMinutes += currentSessionMinutes;
+        console.log('[Analytics] 💬 FEEDBACK - Adding to feedback:', currentSessionMinutes);
         break;
       case 'CROSS_UTILIZATION':
         crossUtilMinutes += currentSessionMinutes;
+        console.log('[Analytics] 👥 CROSS-UTIL - Adding to cross-util:', currentSessionMinutes);
         break;
+      default:
+        console.warn('[Analytics] ⚠️ Unknown status:', currentStatus);
     }
     
     const loginTime = new Date(session.startTime).toLocaleTimeString('en-IN', {
@@ -149,13 +197,15 @@ const getLocalSessionAsDaySummary = (
       feedbackMinutes +
       crossUtilMinutes;
     
-    console.log('[Analytics] 📊 Current session:', {
+    console.log('[Analytics] 🎯 FINAL RESULT:', {
       userId,
       currentStatus,
       currentSessionMinutes,
       storedProductiveMinutes: stats.productiveMinutes || 0,
       totalProductiveMinutes: productiveMinutes,
-      totalMinutes
+      totalMinutes,
+      loginTime,
+      logoutTime
     });
     
     return {
@@ -173,7 +223,7 @@ const getLocalSessionAsDaySummary = (
       isLeave: false,
     };
   } catch (e) {
-    console.error('[Analytics] Error reading local session:', e);
+    console.error('[Analytics] ❌ ERROR reading local session:', e);
     return null;
   }
 };
@@ -489,6 +539,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
   const [startMonth, setStartMonth] = useState(new Date());
   const [endMonth, setEndMonth] = useState(new Date());
   const [lastSync, setLastSync] = useState<Date>(new Date());
+  const [liveUpdate, setLiveUpdate] = useState<number>(0);
   const startButtonRef = useRef<HTMLButtonElement>(null);
   const endButtonRef = useRef<HTMLButtonElement>(null);
   const userButtonRef = useRef<HTMLButtonElement>(null);
@@ -506,14 +557,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
   }, []);
 
   useEffect(() => {
+    console.log('[Analytics] 🚀 Starting EXTREME refresh - every 1 second');
     const interval = setInterval(() => {
       setLastSync(new Date());
-    }, 10000);
+      setLiveUpdate(prev => prev + 1);
+      console.log('[Analytics] 🔄 FORCE REFRESH TRIGGERED');
+    }, 1000);
     
     return () => clearInterval(interval);
   }, []);
 
   const mergedData = useMemo(() => {
+    console.log('[Analytics] 🔄 mergedData recalculating... liveUpdate:', liveUpdate);
     let result = [...data];
     
     if (isPrivileged && selectedUserId === 'all') {
@@ -526,14 +581,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
       result = mergeLocalWithBackendData(result, targetUserId, serverOffsetMs);
     }
     
-    console.log('[Analytics] 🔄 Merged data:', {
+    console.log('[Analytics] 🔄 Merged data COMPLETE:', {
       backend: data.length,
       merged: result.length,
-      lastSync: lastSync.toLocaleTimeString()
+      lastSync: lastSync.toLocaleTimeString(),
+      liveUpdate
     });
     
     return result;
-  }, [data, isPrivileged, selectedUserId, user.id, users, serverOffsetMs, lastSync]);
+  }, [data, isPrivileged, selectedUserId, user.id, users, serverOffsetMs, lastSync, liveUpdate]);
 
   const getUserName = (id: string) => {
     const u = users.find(u => u.id === id || u.email === id || u.name === id);
@@ -649,6 +705,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
 
   const forceRefresh = () => {
     setLastSync(new Date());
+    setLiveUpdate(prev => prev + 1);
+    console.log('[Analytics] 🔄 MANUAL REFRESH TRIGGERED');
   };
 
   return (
@@ -661,15 +719,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
           <div>
             <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Analytics</h2>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2">
-              Performance insights and reports
+              🔴 LIVE • Updates every 1 second
               <button 
                 onClick={forceRefresh}
-                className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
-                title="Refresh from Dashboard"
+                className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors animate-pulse"
+                title="Force Refresh"
               >
                 <RefreshCw className="w-3.5 h-3.5" strokeWidth={2.5} />
               </button>
-              <span className="text-xs text-slate-400">• Synced: {lastSync.toLocaleTimeString()}</span>
+              <span className="text-xs text-slate-400 font-mono">#{liveUpdate}</span>
             </p>
           </div>
         </div>
