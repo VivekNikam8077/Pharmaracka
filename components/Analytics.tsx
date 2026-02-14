@@ -74,7 +74,6 @@ const toISTDateString = (d: Date): string => {
   }
 };
 
-// ✅ Read from Dashboard's local storage
 const getLocalSessionAsDaySummary = (
   userId: string,
   serverOffsetMs: number = 0
@@ -96,6 +95,38 @@ const getLocalSessionAsDaySummary = (
     
     if (stats.date !== today || session.date !== today) return null;
     
+    const statusChangeTime = session.statusChangeTime || session.startTime;
+    const currentSessionMinutes = Math.floor((now - statusChangeTime) / 60000);
+    const currentStatus = session.status || 'AVAILABLE';
+    
+    let productiveMinutes = stats.productiveMinutes || 0;
+    let lunchMinutes = stats.lunchMinutes || 0;
+    let snacksMinutes = stats.snacksMinutes || 0;
+    let refreshmentMinutes = stats.refreshmentMinutes || 0;
+    let feedbackMinutes = stats.feedbackMinutes || 0;
+    let crossUtilMinutes = stats.crossUtilMinutes || 0;
+    
+    switch (currentStatus) {
+      case 'AVAILABLE':
+        productiveMinutes += currentSessionMinutes;
+        break;
+      case 'LUNCH':
+        lunchMinutes += currentSessionMinutes;
+        break;
+      case 'SNACKS':
+        snacksMinutes += currentSessionMinutes;
+        break;
+      case 'REFRESHMENT_BREAK':
+        refreshmentMinutes += currentSessionMinutes;
+        break;
+      case 'QUALITY_FEEDBACK':
+        feedbackMinutes += currentSessionMinutes;
+        break;
+      case 'CROSS_UTILIZATION':
+        crossUtilMinutes += currentSessionMinutes;
+        break;
+    }
+    
     const loginTime = new Date(session.startTime).toLocaleTimeString('en-IN', {
       hour: '2-digit',
       minute: '2-digit',
@@ -111,24 +142,33 @@ const getLocalSessionAsDaySummary = (
     });
     
     const totalMinutes = 
-      (stats.productiveMinutes || 0) +
-      (stats.lunchMinutes || 0) +
-      (stats.snacksMinutes || 0) +
-      (stats.refreshmentMinutes || 0) +
-      (stats.feedbackMinutes || 0) +
-      (stats.crossUtilMinutes || 0);
+      productiveMinutes +
+      lunchMinutes +
+      snacksMinutes +
+      refreshmentMinutes +
+      feedbackMinutes +
+      crossUtilMinutes;
+    
+    console.log('[Analytics] 📊 Current session:', {
+      userId,
+      currentStatus,
+      currentSessionMinutes,
+      storedProductiveMinutes: stats.productiveMinutes || 0,
+      totalProductiveMinutes: productiveMinutes,
+      totalMinutes
+    });
     
     return {
       userId,
       date: today,
       loginTime,
       logoutTime,
-      productiveMinutes: stats.productiveMinutes || 0,
-      lunchMinutes: stats.lunchMinutes || 0,
-      snacksMinutes: stats.snacksMinutes || 0,
-      refreshmentMinutes: stats.refreshmentMinutes || 0,
-      feedbackMinutes: stats.feedbackMinutes || 0,
-      crossUtilMinutes: stats.crossUtilMinutes || 0,
+      productiveMinutes,
+      lunchMinutes,
+      snacksMinutes,
+      refreshmentMinutes,
+      feedbackMinutes,
+      crossUtilMinutes,
       totalMinutes,
       isLeave: false,
     };
@@ -138,7 +178,6 @@ const getLocalSessionAsDaySummary = (
   }
 };
 
-// ✅ Merge local storage with backend data
 const mergeLocalWithBackendData = (
   backendData: DaySummary[],
   userId: string,
@@ -153,7 +192,6 @@ const mergeLocalWithBackendData = (
   return [...filteredBackend, localToday];
 };
 
-// ✅ Get all local sessions (for admin view)
 const getAllLocalSessions = (
   userIds: string[],
   serverOffsetMs: number = 0
@@ -467,7 +505,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // ✅ Auto-refresh from local storage every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       setLastSync(new Date());
@@ -476,7 +513,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
     return () => clearInterval(interval);
   }, []);
 
-  // ✅ Merge local storage data with backend data
   const mergedData = useMemo(() => {
     let result = [...data];
     
@@ -617,7 +653,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
 
   return (
     <div className="space-y-6 pb-24 animate-in fade-in duration-700" style={{ animationFillMode: 'backwards' }}>
-      {/* Header */}
       <div className="flex items-center justify-between gap-4 mb-8">
         <div className="flex items-center gap-4">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/25">
@@ -652,7 +687,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
         )}
       </div>
 
-      {/* Filters */}
       <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {isPrivileged && (
@@ -767,7 +801,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
         </div>
       </div>
 
-      {/* Chart */}
       <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -783,7 +816,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
         <Chart points={chartPoints} color={METRIC_CONFIG[activeMetric].color} gradientId={METRIC_CONFIG[activeMetric].gradientId} maxVal={maxVal} />
       </div>
 
-      {/* Metric Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {Object.entries(METRIC_CONFIG).map(([label, config]) => (
           <button key={label} onClick={() => setActiveMetric(label)}
@@ -805,7 +837,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
         ))}
       </div>
 
-      {/* Table */}
       <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700/50 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Activity Logs</h3>
