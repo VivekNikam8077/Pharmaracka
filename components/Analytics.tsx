@@ -16,6 +16,7 @@ import {
   Palmtree,
   Download,
   ChevronDown,
+  RefreshCw,
 } from 'lucide-react';
 
 interface AnalyticsProps {
@@ -23,6 +24,7 @@ interface AnalyticsProps {
   setData: React.Dispatch<React.SetStateAction<DaySummary[]>>;
   user: User;
   users: User[];
+  serverOffsetMs?: number;
 }
 
 const CHART_W = 1000;
@@ -31,6 +33,9 @@ const PAD_L = 60;
 const PAD_R = 40;
 const PAD_T = 20;
 const PAD_B = 40;
+
+const SESSION_STATS_KEY = 'officely_session_stats_';
+const STORAGE_KEY_PREFIX = 'officely_session_';
 
 const METRIC_CONFIG: Record<string, { color: string; gradientId: string; key: keyof DaySummary; icon: React.ReactNode; desc: string }> = {
   'Work':      { color: '#10b981', gradientId: 'grad-work',     key: 'productiveMinutes',  icon: <Activity className="w-5 h-5" strokeWidth={2.5} />,  desc: 'Productive Time' },
@@ -53,12 +58,121 @@ const toDateStr = (d: Date): string => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-// ✅ FIXED: Better holiday detection
+const toISTDateString = (d: Date): string => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d);
+  } catch (e) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+};
+
+// ✅ Read from Dashboard's local storage
+const getLocalSessionAsDaySummary = (
+  userId: string,
+  serverOffsetMs: number = 0
+): DaySummary | null => {
+  try {
+    const statsKey = `${SESSION_STATS_KEY}${userId}`;
+    const sessionKey = `${STORAGE_KEY_PREFIX}${userId}`;
+    
+    const statsRaw = localStorage.getItem(statsKey);
+    const sessionRaw = localStorage.getItem(sessionKey);
+    
+    if (!statsRaw || !sessionRaw) return null;
+    
+    const stats = JSON.parse(statsRaw);
+    const session = JSON.parse(sessionRaw);
+    
+    const now = Date.now() + serverOffsetMs;
+    const today = toISTDateString(new Date(now));
+    
+    if (stats.date !== today || session.date !== today) return null;
+    
+    const loginTime = new Date(session.startTime).toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZone: 'Asia/Kolkata'
+    });
+    
+    const logoutTime = new Date(now).toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZone: 'Asia/Kolkata'
+    });
+    
+    const totalMinutes = 
+      (stats.productiveMinutes || 0) +
+      (stats.lunchMinutes || 0) +
+      (stats.snacksMinutes || 0) +
+      (stats.refreshmentMinutes || 0) +
+      (stats.feedbackMinutes || 0) +
+      (stats.crossUtilMinutes || 0);
+    
+    return {
+      userId,
+      date: today,
+      loginTime,
+      logoutTime,
+      productiveMinutes: stats.productiveMinutes || 0,
+      lunchMinutes: stats.lunchMinutes || 0,
+      snacksMinutes: stats.snacksMinutes || 0,
+      refreshmentMinutes: stats.refreshmentMinutes || 0,
+      feedbackMinutes: stats.feedbackMinutes || 0,
+      crossUtilMinutes: stats.crossUtilMinutes || 0,
+      totalMinutes,
+      isLeave: false,
+    };
+  } catch (e) {
+    console.error('[Analytics] Error reading local session:', e);
+    return null;
+  }
+};
+
+// ✅ Merge local storage with backend data
+const mergeLocalWithBackendData = (
+  backendData: DaySummary[],
+  userId: string,
+  serverOffsetMs: number = 0
+): DaySummary[] => {
+  const localToday = getLocalSessionAsDaySummary(userId, serverOffsetMs);
+  
+  if (!localToday) return backendData;
+  
+  const filteredBackend = backendData.filter(d => d.date !== localToday.date || d.userId !== userId);
+  
+  return [...filteredBackend, localToday];
+};
+
+// ✅ Get all local sessions (for admin view)
+const getAllLocalSessions = (
+  userIds: string[],
+  serverOffsetMs: number = 0
+): DaySummary[] => {
+  const sessions: DaySummary[] = [];
+  
+  for (const userId of userIds) {
+    const session = getLocalSessionAsDaySummary(userId, serverOffsetMs);
+    if (session) {
+      sessions.push(session);
+    }
+  }
+  
+  return sessions;
+};
+
 const isHoliday = (summary: DaySummary): boolean => {
-  // Check if explicitly marked as leave
   if (summary.isLeave) return true;
   
-  // Check if there's any activity at all
   const totalActivity = (summary.productiveMinutes || 0) + 
                         (summary.lunchMinutes || 0) + 
                         (summary.snacksMinutes || 0) + 
@@ -66,10 +180,8 @@ const isHoliday = (summary: DaySummary): boolean => {
                         (summary.feedbackMinutes || 0) + 
                         (summary.crossUtilMinutes || 0);
   
-  // If there's ANY activity, it's not a holiday
   if (totalActivity > 0) return false;
   
-  // Check for invalid or missing login/logout times
   const login = (summary.loginTime || '').trim();
   const logout = (summary.logoutTime || '').trim();
   
@@ -326,7 +438,7 @@ const Chart: React.FC<ChartProps> = ({ points, color, gradientId, maxVal }) => {
   );
 };
 
-const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
+const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs = 0 }) => {
   const [range, setRange] = useState<'7D' | '30D' | 'All' | 'Custom'>('7D');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -338,6 +450,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
   const [showEndCal, setShowEndCal] = useState(false);
   const [startMonth, setStartMonth] = useState(new Date());
   const [endMonth, setEndMonth] = useState(new Date());
+  const [lastSync, setLastSync] = useState<Date>(new Date());
   const startButtonRef = useRef<HTMLButtonElement>(null);
   const endButtonRef = useRef<HTMLButtonElement>(null);
   const userButtonRef = useRef<HTMLButtonElement>(null);
@@ -354,13 +467,45 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // ✅ Auto-refresh from local storage every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setLastSync(new Date());
+    }, 10000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // ✅ Merge local storage data with backend data
+  const mergedData = useMemo(() => {
+    let result = [...data];
+    
+    if (isPrivileged && selectedUserId === 'all') {
+      const localSessions = getAllLocalSessions(users.map(u => u.id), serverOffsetMs);
+      const today = toDateStr(new Date(Date.now() + serverOffsetMs));
+      result = result.filter(d => d.date !== today);
+      result = [...result, ...localSessions];
+    } else {
+      const targetUserId = isPrivileged ? selectedUserId : user.id;
+      result = mergeLocalWithBackendData(result, targetUserId, serverOffsetMs);
+    }
+    
+    console.log('[Analytics] 🔄 Merged data:', {
+      backend: data.length,
+      merged: result.length,
+      lastSync: lastSync.toLocaleTimeString()
+    });
+    
+    return result;
+  }, [data, isPrivileged, selectedUserId, user.id, users, serverOffsetMs, lastSync]);
+
   const getUserName = (id: string) => {
     const u = users.find(u => u.id === id || u.email === id || u.name === id);
     return u?.name || id;
   };
 
   const filteredData = useMemo(() => {
-    let result = [...data];
+    let result = [...mergedData];
 
     const matchesUser = (dayUserId: string, u: User) => {
       const key = (dayUserId || '').toLowerCase();
@@ -406,16 +551,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
       );
     }
 
-    console.log('[Analytics] Filtered data:', {
-      total: data.length,
-      filtered: result.length,
-      range,
-      selectedUserId,
-      sample: result[0]
-    });
-
     return result.sort((a, b) => a.date.localeCompare(b.date));
-  }, [data, range, startDate, endDate, search, user, users, isPrivileged, selectedUserId]);
+  }, [mergedData, range, startDate, endDate, search, user, users, isPrivileged, selectedUserId]);
 
   const { chartPoints, maxVal } = useMemo(() => {
     const getValue = (d: DaySummary): number => {
@@ -474,6 +611,10 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
     a.click();
   };
 
+  const forceRefresh = () => {
+    setLastSync(new Date());
+  };
+
   return (
     <div className="space-y-6 pb-24 animate-in fade-in duration-700" style={{ animationFillMode: 'backwards' }}>
       {/* Header */}
@@ -484,7 +625,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users }) => {
           </div>
           <div>
             <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Analytics</h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Performance insights and reports</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2">
+              Performance insights and reports
+              <button 
+                onClick={forceRefresh}
+                className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
+                title="Refresh from Dashboard"
+              >
+                <RefreshCw className="w-3.5 h-3.5" strokeWidth={2.5} />
+              </button>
+              <span className="text-xs text-slate-400">• Synced: {lastSync.toLocaleTimeString()}</span>
+            </p>
           </div>
         </div>
         {isPrivileged && (
