@@ -85,50 +85,23 @@ const getLocalSessionAsDaySummary = (
     const statsRaw = localStorage.getItem(statsKey);
     const sessionRaw = localStorage.getItem(sessionKey);
     
-    console.log('[Analytics] 🔍 Reading local storage:', {
-      userId,
-      statsKey,
-      sessionKey,
-      hasStats: !!statsRaw,
-      hasSession: !!sessionRaw
-    });
-    
     if (!statsRaw || !sessionRaw) {
-      console.warn('[Analytics] ⚠️ Missing local storage data');
       return null;
     }
     
     const stats = JSON.parse(statsRaw);
     const session = JSON.parse(sessionRaw);
     
-    console.log('[Analytics] 📦 Parsed data:', {
-      stats,
-      session
-    });
-    
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
     if (stats.date !== today || session.date !== today) {
-      console.warn('[Analytics] ⚠️ Date mismatch:', {
-        statsDate: stats.date,
-        sessionDate: session.date,
-        today
-      });
       return null;
     }
     
     const statusChangeTime = session.statusChangeTime || session.startTime;
     const currentSessionMinutes = Math.floor((now - statusChangeTime) / 60000);
     const currentStatus = session.status || 'AVAILABLE';
-    
-    console.log('[Analytics] ⏱️ Time calculation:', {
-      now,
-      statusChangeTime,
-      timeDiff: now - statusChangeTime,
-      currentSessionMinutes,
-      currentStatus
-    });
     
     let productiveMinutes = stats.productiveMinutes || 0;
     let lunchMinutes = stats.lunchMinutes || 0;
@@ -137,42 +110,25 @@ const getLocalSessionAsDaySummary = (
     let feedbackMinutes = stats.feedbackMinutes || 0;
     let crossUtilMinutes = stats.crossUtilMinutes || 0;
     
-    console.log('[Analytics] 📊 Stored stats:', {
-      productiveMinutes,
-      lunchMinutes,
-      snacksMinutes,
-      refreshmentMinutes,
-      feedbackMinutes,
-      crossUtilMinutes
-    });
-    
     switch (currentStatus) {
       case 'AVAILABLE':
         productiveMinutes += currentSessionMinutes;
-        console.log('[Analytics] ✅ AVAILABLE - Adding to productive:', currentSessionMinutes);
         break;
       case 'LUNCH':
         lunchMinutes += currentSessionMinutes;
-        console.log('[Analytics] 🍔 LUNCH - Adding to lunch:', currentSessionMinutes);
         break;
       case 'SNACKS':
         snacksMinutes += currentSessionMinutes;
-        console.log('[Analytics] 🍪 SNACKS - Adding to snacks:', currentSessionMinutes);
         break;
       case 'REFRESHMENT_BREAK':
         refreshmentMinutes += currentSessionMinutes;
-        console.log('[Analytics] ☕ BREAK - Adding to refreshment:', currentSessionMinutes);
         break;
       case 'QUALITY_FEEDBACK':
         feedbackMinutes += currentSessionMinutes;
-        console.log('[Analytics] 💬 FEEDBACK - Adding to feedback:', currentSessionMinutes);
         break;
       case 'CROSS_UTILIZATION':
         crossUtilMinutes += currentSessionMinutes;
-        console.log('[Analytics] 👥 CROSS-UTIL - Adding to cross-util:', currentSessionMinutes);
         break;
-      default:
-        console.warn('[Analytics] ⚠️ Unknown status:', currentStatus);
     }
     
     const loginTime = new Date(session.startTime).toLocaleTimeString('en-IN', {
@@ -197,17 +153,6 @@ const getLocalSessionAsDaySummary = (
       feedbackMinutes +
       crossUtilMinutes;
     
-    console.log('[Analytics] 🎯 FINAL RESULT:', {
-      userId,
-      currentStatus,
-      currentSessionMinutes,
-      storedProductiveMinutes: stats.productiveMinutes || 0,
-      totalProductiveMinutes: productiveMinutes,
-      totalMinutes,
-      loginTime,
-      logoutTime
-    });
-    
     return {
       userId,
       date: today,
@@ -223,7 +168,7 @@ const getLocalSessionAsDaySummary = (
       isLeave: false,
     };
   } catch (e) {
-    console.error('[Analytics] ❌ ERROR reading local session:', e);
+    console.error('[Analytics] Error reading local session:', e);
     return null;
   }
 };
@@ -242,17 +187,24 @@ const mergeLocalWithBackendData = (
   return [...filteredBackend, localToday];
 };
 
-const getAllLocalSessions = (
-  userIds: string[],
+const getAllLocalSessionsOnThisMachine = (
   serverOffsetMs: number = 0
 ): DaySummary[] => {
   const sessions: DaySummary[] = [];
   
-  for (const userId of userIds) {
-    const session = getLocalSessionAsDaySummary(userId, serverOffsetMs);
-    if (session) {
-      sessions.push(session);
+  try {
+    const keys = Object.keys(localStorage);
+    const sessionKeys = keys.filter(k => k.startsWith(STORAGE_KEY_PREFIX));
+    
+    for (const key of sessionKeys) {
+      const userId = key.replace(STORAGE_KEY_PREFIX, '');
+      const session = getLocalSessionAsDaySummary(userId, serverOffsetMs);
+      if (session) {
+        sessions.push(session);
+      }
     }
+  } catch (e) {
+    console.error('[Analytics] Error reading all local sessions:', e);
   }
   
   return sessions;
@@ -543,6 +495,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
   const startButtonRef = useRef<HTMLButtonElement>(null);
   const endButtonRef = useRef<HTMLButtonElement>(null);
   const userButtonRef = useRef<HTMLButtonElement>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const isPrivileged = user.role === UserRole.SUPER_USER || user.role === UserRole.ADMIN;
 
@@ -557,36 +510,47 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
   }, []);
 
   useEffect(() => {
-    console.log('[Analytics] 🚀 Starting EXTREME refresh - every 1 second');
-    const interval = setInterval(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+    
+    intervalRef.current = setInterval(() => {
       setLastSync(new Date());
       setLiveUpdate(prev => prev + 1);
-      console.log('[Analytics] 🔄 FORCE REFRESH TRIGGERED');
-    }, 1000);
+    }, 5000);
     
-    return () => clearInterval(interval);
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
   }, []);
 
   const mergedData = useMemo(() => {
-    console.log('[Analytics] 🔄 mergedData recalculating... liveUpdate:', liveUpdate);
     let result = [...data];
+    const today = toDateStr(new Date(Date.now() + serverOffsetMs));
     
     if (isPrivileged && selectedUserId === 'all') {
-      const localSessions = getAllLocalSessions(users.map(u => u.id), serverOffsetMs);
-      const today = toDateStr(new Date(Date.now() + serverOffsetMs));
+      const localSessions = getAllLocalSessionsOnThisMachine(serverOffsetMs);
       result = result.filter(d => d.date !== today);
       result = [...result, ...localSessions];
+      
+      console.log('[Analytics] Super user - All users view:', {
+        backendRecords: data.length,
+        localSessionsOnThisMachine: localSessions.length,
+        merged: result.length
+      });
     } else {
       const targetUserId = isPrivileged ? selectedUserId : user.id;
       result = mergeLocalWithBackendData(result, targetUserId, serverOffsetMs);
+      
+      console.log('[Analytics] Single user view:', {
+        targetUserId,
+        backendRecords: data.length,
+        merged: result.length
+      });
     }
-    
-    console.log('[Analytics] 🔄 Merged data COMPLETE:', {
-      backend: data.length,
-      merged: result.length,
-      lastSync: lastSync.toLocaleTimeString(),
-      liveUpdate
-    });
     
     return result;
   }, [data, isPrivileged, selectedUserId, user.id, users, serverOffsetMs, lastSync, liveUpdate]);
@@ -706,7 +670,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
   const forceRefresh = () => {
     setLastSync(new Date());
     setLiveUpdate(prev => prev + 1);
-    console.log('[Analytics] 🔄 MANUAL REFRESH TRIGGERED');
   };
 
   return (
@@ -719,15 +682,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
           <div>
             <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Analytics</h2>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2">
-              🔴 LIVE • Updates every 1 second
+              Live sync • Updates every 5 seconds
               <button 
                 onClick={forceRefresh}
-                className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors animate-pulse"
+                className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
                 title="Force Refresh"
               >
                 <RefreshCw className="w-3.5 h-3.5" strokeWidth={2.5} />
               </button>
-              <span className="text-xs text-slate-400 font-mono">#{liveUpdate}</span>
             </p>
           </div>
         </div>
@@ -776,7 +738,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
                       <div className="max-h-64 overflow-auto py-2">
                         <button type="button" onClick={() => { setSelectedUserId('all'); setIsUserMenuOpen(false); }}
                           className={`w-full text-left px-4 py-2.5 text-sm font-medium transition-all duration-150 ${selectedUserId === 'all' ? 'bg-indigo-50 text-indigo-600 dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
-                          All Users
+                          All Users (Local Sessions Only)
                         </button>
                         {users.map(u => (
                           <button key={u.id} type="button" onClick={() => { setSelectedUserId(u.id); setIsUserMenuOpen(false); }}
@@ -924,7 +886,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ data, user, users, serverOffsetMs
                       <p className="text-xs text-slate-400 dark:text-slate-600">
                         {data.length === 0 
                           ? 'No data has been recorded yet. Data will appear after users log in and use the system.'
-                          : 'Try adjusting your filters or date range to see more data.'}
+                          : selectedUserId === 'all' 
+                            ? 'Showing only users with active sessions on this device. Backend data for other users is available when viewing individual users.'
+                            : 'Try adjusting your filters or date range to see more data.'}
                       </p>
                       {data.length > 0 && filteredData.length === 0 && (
                         <button 
