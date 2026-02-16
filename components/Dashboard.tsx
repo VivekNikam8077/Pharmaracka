@@ -1,16 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User, AppSettings, RealtimeStatus, OfficeStatus } from '../types';
 import { Socket } from 'socket.io-client';
-import { 
-  Clock, 
-  Activity, 
-  Coffee, 
-  Cookie, 
-  Sparkles, 
-  MessageSquare, 
-  Users, 
-  CheckCircle2,
-  Timer,
+import {
+  Clock, Activity, Coffee, Cookie, Sparkles,
+  MessageSquare, Users, CheckCircle2, RefreshCw,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -23,768 +16,308 @@ interface DashboardProps {
   serverOffsetMs: number;
 }
 
-const STORAGE_KEY_PREFIX = 'officely_session_';
-const SESSION_STATS_KEY = 'officely_session_stats_';
-const IDLE_TRACK_KEY = 'officely_idle_track_v1';
-const INIT_FLAG_KEY = 'officely_init_flag_';
-const TIME_UPDATE_INTERVAL = 5 * 60 * 1000;
-const DEBOUNCE_SAVE_MS = 1000;
-const LIVE_MONITOR_UPDATE_INTERVAL = 2000; // ✅ Send time to Live Monitor every 2 seconds
-
-interface SessionStats {
-  date: string;
+interface TodayStats {
   productiveMinutes: number;
   lunchMinutes: number;
   snacksMinutes: number;
   refreshmentMinutes: number;
   feedbackMinutes: number;
   crossUtilMinutes: number;
-  lastSavedAt: number;
+  totalMinutes: number;
+  loginTime: string;
 }
 
+const EMPTY_STATS: TodayStats = {
+  productiveMinutes: 0, lunchMinutes: 0, snacksMinutes: 0,
+  refreshmentMinutes: 0, feedbackMinutes: 0, crossUtilMinutes: 0,
+  totalMinutes: 0, loginTime: '',
+};
+
+const POLL_MS = 30_000;
+
+const getServerIp = () =>
+  localStorage.getItem('officely_server_ip') || 'https://server2-e3p9.onrender.com';
+
+const formatTime = (ms: number): string => {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+};
+
+const formatMinutes = (minutes: number): string => {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+
+const getStatusConfig = (status: OfficeStatus) => {
+  switch (status) {
+    case OfficeStatus.AVAILABLE:
+      return { icon: CheckCircle2,  color: 'from-emerald-500 to-teal-600',  textColor: 'text-emerald-600', label: 'Available' };
+    case OfficeStatus.LUNCH:
+      return { icon: Coffee,        color: 'from-orange-500 to-amber-600',  textColor: 'text-orange-600',  label: 'Lunch' };
+    case OfficeStatus.SNACKS:
+      return { icon: Cookie,        color: 'from-yellow-500 to-orange-500', textColor: 'text-yellow-600',  label: 'Snacks' };
+    case OfficeStatus.REFRESHMENT_BREAK:
+      return { icon: Sparkles,      color: 'from-blue-500 to-cyan-600',     textColor: 'text-blue-600',    label: 'Break' };
+    case OfficeStatus.QUALITY_FEEDBACK:
+      return { icon: MessageSquare, color: 'from-purple-500 to-pink-600',   textColor: 'text-purple-600',  label: 'Feedback' };
+    case OfficeStatus.CROSS_UTILIZATION:
+      return { icon: Users,         color: 'from-indigo-500 to-purple-600', textColor: 'text-indigo-600',  label: 'Cross-Util' };
+    default:
+      return { icon: Activity,      color: 'from-slate-500 to-slate-600',   textColor: 'text-slate-600',   label: status };
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const Dashboard: React.FC<DashboardProps> = ({
-  user,
-  settings,
-  realtimeStatuses,
-  setRealtimeStatuses,
-  socket,
-  hasSynced,
-  serverOffsetMs
+  user, settings, realtimeStatuses, socket, hasSynced, serverOffsetMs,
 }) => {
-  const [currentStatus, setCurrentStatus] = useState<OfficeStatus>(OfficeStatus.AVAILABLE);
-  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
-  const [elapsedTime, setElapsedTime] = useState(0);
-  const [statusDuration, setStatusDuration] = useState(0);
-  const [todayStats, setTodayStats] = useState({
-    productiveMinutes: 0,
-    lunchMinutes: 0,
-    snacksMinutes: 0,
-    refreshmentMinutes: 0,
-    feedbackMinutes: 0,
-    crossUtilMinutes: 0,
-    totalMinutes: 0,
-    idleMinutes: 0,
-  });
+  const [currentStatus, setCurrentStatus]     = useState<OfficeStatus>(OfficeStatus.AVAILABLE);
+  const [todayStats, setTodayStats]           = useState<TodayStats>(EMPTY_STATS);
+  const [isFetching, setIsFetching]           = useState(false);
+  const [sessionStartMs, setSessionStartMs]   = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime]         = useState(0);
+  const [statusDuration, setStatusDuration]   = useState(0);
 
+  const currentStatusRef    = useRef<OfficeStatus>(OfficeStatus.AVAILABLE);
   const statusChangeTimeRef = useRef<number>(Date.now());
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const periodicUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const liveMonitorUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null); // ✅ NEW
-  const isChangingStatusRef = useRef(false);
-  const currentStatusRef = useRef<OfficeStatus>(OfficeStatus.AVAILABLE);
-  const dbSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastDbSaveRef = useRef<number>(0);
-  const pendingSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isChangingRef       = useRef(false);
+  const pollRef             = useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedRef          = useRef<ReturnType<typeof setInterval> | null>(null);
+  const initializedRef      = useRef(false);
 
-  const toISTDateString = (d: Date): string => {
+  // ── fetch today's stats from DB ──────────────────────────────────────────
+  const fetchToday = useCallback(async (showSpinner = false) => {
     try {
-      return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(d);
+      if (showSpinner) setIsFetching(true);
+      const res  = await fetch(`${getServerIp()}/api/Office/today?userId=${encodeURIComponent(user.id)}`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (!json.ok) return;
+
+      const row = json.data;
+      if (!row) { setTodayStats(EMPTY_STATS); return; }
+
+      setTodayStats({
+        productiveMinutes:  row.productiveminutes  || 0,
+        lunchMinutes:       row.lunchminutes       || 0,
+        snacksMinutes:      row.snacksminutes      || 0,
+        refreshmentMinutes: row.refreshmentminutes || 0,
+        feedbackMinutes:    row.feedbackminutes    || 0,
+        crossUtilMinutes:   row.crossutilminutes   || 0,
+        totalMinutes:       row.totalminutes       || 0,
+        loginTime:          row.logintime          || '',
+      });
+
+      // Derive session start from server-recorded logintime (IST)
+      if (row.logintime && !sessionStartMs) {
+        const today      = json.date; // "YYYY-MM-DD"
+        const loginEpoch = new Date(`${today}T${row.logintime}+05:30`).getTime();
+        if (Number.isFinite(loginEpoch)) setSessionStartMs(loginEpoch);
+      }
     } catch (e) {
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      return `${yyyy}-${mm}-${dd}`;
+      console.error('[Dashboard] fetchToday:', e);
+    } finally {
+      if (showSpinner) setIsFetching(false);
     }
-  };
+  }, [user.id, sessionStartMs]);
 
-  const isAlreadyInitialized = (today: string): boolean => {
-    try {
-      const key = `${INIT_FLAG_KEY}${user.id}`;
-      const stored = localStorage.getItem(key);
-      if (stored) {
-        const data = JSON.parse(stored);
-        return data.date === today && data.initialized === true;
-      }
-    } catch (e) {}
-    return false;
-  };
+  // ── initialise once after sync ────────────────────────────────────────────
+  useEffect(() => {
+    if (!hasSynced || !socket || initializedRef.current) return;
+    initializedRef.current = true;
 
-  const markAsInitialized = (today: string) => {
-    try {
-      const key = `${INIT_FLAG_KEY}${user.id}`;
-      localStorage.setItem(key, JSON.stringify({
-        date: today,
-        initialized: true,
-        timestamp: Date.now()
-      }));
-    } catch (e) {}
-  };
+    // Pick up status from live presence if available
+    const myPresence = realtimeStatuses.find(s => s.userId === user.id);
+    const initStatus = (myPresence?.status as OfficeStatus) || OfficeStatus.AVAILABLE;
+    setCurrentStatus(initStatus);
+    currentStatusRef.current    = initStatus;
+    statusChangeTimeRef.current = Date.now() + serverOffsetMs;
 
-  const saveSessionStats = (stats: SessionStats) => {
-    const statsKey = `${SESSION_STATS_KEY}${user.id}`;
-    try {
-      localStorage.setItem(statsKey, JSON.stringify({
-        ...stats,
-        lastSavedAt: Date.now() + serverOffsetMs
-      }));
-    } catch (e) {}
-  };
-
-  const loadSessionStats = (today: string): SessionStats => {
-    const statsKey = `${SESSION_STATS_KEY}${user.id}`;
-    try {
-      const stored = localStorage.getItem(statsKey);
-      if (stored) {
-        const stats: SessionStats = JSON.parse(stored);
-        if (stats.date === today) return stats;
-      }
-    } catch (e) {}
-    
-    return {
-      date: today,
-      productiveMinutes: 0,
-      lunchMinutes: 0,
-      snacksMinutes: 0,
-      refreshmentMinutes: 0,
-      feedbackMinutes: 0,
-      crossUtilMinutes: 0,
-      lastSavedAt: Date.now() + serverOffsetMs
-    };
-  };
-
-  const getCurrentSessionMinutes = (now: number): number => {
-    return Math.floor((now - statusChangeTimeRef.current) / 60000);
-  };
-
-  const saveStatsToDatabase = async (options?: { immediate?: boolean }) => {
-    if (!socket || !sessionStartTime) return;
-    
-    const now = Date.now() + serverOffsetMs;
-    const timeSinceLastSave = now - lastDbSaveRef.current;
-    
-    if (!options?.immediate && timeSinceLastSave < DEBOUNCE_SAVE_MS) {
-      return;
-    }
-    
-    try {
-      const today = toISTDateString(new Date(now));
-      const sessionStats = loadSessionStats(today);
-      const currentSessionMinutes = getCurrentSessionMinutes(now);
-      
-      let productiveMinutes = sessionStats.productiveMinutes;
-      let lunchMinutes = sessionStats.lunchMinutes;
-      let snacksMinutes = sessionStats.snacksMinutes;
-      let refreshmentMinutes = sessionStats.refreshmentMinutes;
-      let feedbackMinutes = sessionStats.feedbackMinutes;
-      let crossUtilMinutes = sessionStats.crossUtilMinutes;
-      
-      switch (currentStatus) {
-        case OfficeStatus.AVAILABLE:
-          productiveMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.LUNCH:
-          lunchMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.SNACKS:
-          snacksMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.REFRESHMENT_BREAK:
-          refreshmentMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.QUALITY_FEEDBACK:
-          feedbackMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.CROSS_UTILIZATION:
-          crossUtilMinutes += currentSessionMinutes;
-          break;
-      }
-      
-      const totalMinutes = productiveMinutes + lunchMinutes + snacksMinutes + 
-                          refreshmentMinutes + feedbackMinutes + crossUtilMinutes;
-      
-      const loginTime = new Date(sessionStartTime).toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        timeZone: 'Asia/Kolkata'
-      });
-      
-      const logoutTime = new Date(now).toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        timeZone: 'Asia/Kolkata'
-      });
-      
-      socket.emit('save_daily_stats', {
-        userId: user.id,
-        userName: user.name,
-        date: today,
-        loginTime,
-        logoutTime,
-        productiveMinutes,
-        lunchMinutes,
-        snacksMinutes,
-        refreshmentMinutes,
-        feedbackMinutes,
-        crossUtilMinutes,
-        totalMinutes,
-        isLeave: false
-      });
-      
-      lastDbSaveRef.current = now;
-    } catch (e) {
-      console.error('[Dashboard] ❌ Error saving to database:', e);
-    }
-  };
-
-  const scheduleImmediateSave = () => {
-    if (pendingSaveTimeoutRef.current) {
-      clearTimeout(pendingSaveTimeoutRef.current);
-    }
-    
-    pendingSaveTimeoutRef.current = setTimeout(() => {
-      saveStatsToDatabase({ immediate: true });
-      pendingSaveTimeoutRef.current = null;
-    }, 500);
-  };
-
-  // ✅ Send current elapsed time to Live Monitor every 2 seconds
-  const sendLiveMonitorUpdate = () => {
-    if (!socket || !socket.connected || !sessionStartTime) return;
-    
-    const now = Date.now() + serverOffsetMs;
-    const currentElapsedMs = now - sessionStartTime;
-    const currentElapsedSeconds = Math.floor(currentElapsedMs / 1000);
-    
-    socket.emit('update_session_time', {
-      userId: user.id,
-      userName: user.name,
-      elapsedSeconds: currentElapsedSeconds,
-      loginTime: sessionStartTime,
-    });
-  };
-
-  const sendPeriodicUpdate = () => {
-    if (!socket || !socket.connected || !sessionStartTime) return;
-    
+    // Tell server we're here (it already recorded login; this confirms status)
     socket.emit('status_change', {
-      userId: user.id,
-      userName: user.name,
-      status: currentStatus,
-      role: user.role,
-      activity: 1,
-      periodicUpdate: true,
+      userId: user.id, userName: user.name,
+      status: initStatus, role: user.role, activity: 1,
     });
-  };
 
-  // ✅ Setup Live Monitor time updates (every 2 seconds)
+    // Fetch stats & start polling
+    fetchToday(true);
+    pollRef.current = setInterval(() => fetchToday(false), POLL_MS);
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [hasSynced, socket]); // eslint-disable-line
+
+  // ── elapsed / status-duration ticking (display only) ─────────────────────
   useEffect(() => {
-    if (!socket || !sessionStartTime) return;
-
-    if (liveMonitorUpdateRef.current) {
-      clearInterval(liveMonitorUpdateRef.current);
-    }
-
-    sendLiveMonitorUpdate(); // Send immediately
-    liveMonitorUpdateRef.current = setInterval(sendLiveMonitorUpdate, LIVE_MONITOR_UPDATE_INTERVAL);
-
-    return () => {
-      if (liveMonitorUpdateRef.current) {
-        clearInterval(liveMonitorUpdateRef.current);
-        liveMonitorUpdateRef.current = null;
-      }
-    };
-  }, [socket, sessionStartTime, user.id, user.name]);
-
-  useEffect(() => {
-    if (!socket || !sessionStartTime) return;
-
-    if (periodicUpdateRef.current) {
-      clearInterval(periodicUpdateRef.current);
-    }
-
-    sendPeriodicUpdate();
-    periodicUpdateRef.current = setInterval(sendPeriodicUpdate, TIME_UPDATE_INTERVAL);
-
-    return () => {
-      if (periodicUpdateRef.current) {
-        clearInterval(periodicUpdateRef.current);
-        periodicUpdateRef.current = null;
-      }
-    };
-  }, [socket, sessionStartTime, currentStatus, user.id, user.name, user.role]);
-
-  useEffect(() => {
-    if (!socket || !sessionStartTime) return;
-
-    if (dbSaveIntervalRef.current) {
-      clearInterval(dbSaveIntervalRef.current);
-    }
-
-    saveStatsToDatabase({ immediate: true });
-    
-    dbSaveIntervalRef.current = setInterval(() => {
-      saveStatsToDatabase({ immediate: true });
-    }, TIME_UPDATE_INTERVAL);
-
-    return () => {
-      if (dbSaveIntervalRef.current) {
-        clearInterval(dbSaveIntervalRef.current);
-        dbSaveIntervalRef.current = null;
-      }
-    };
-  }, [socket, sessionStartTime]);
-
-  useEffect(() => {
-    return () => {
-      if (pendingSaveTimeoutRef.current) {
-        clearTimeout(pendingSaveTimeoutRef.current);
-      }
-      if (socket && sessionStartTime) {
-        saveStatsToDatabase({ immediate: true });
-      }
-    };
-  }, [socket, sessionStartTime]);
-
-  useEffect(() => {
-    if (!socket || !hasSynced) return;
-    
-    const now = Date.now() + serverOffsetMs;
-    const today = toISTDateString(new Date(now));
-    
-    const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
-    const stored = localStorage.getItem(sessionKey);
-    
-    if (stored) {
-      try {
-        const data = JSON.parse(stored);
-        
-        if (data.date === today && data.startTime) {
-          console.log('[Dashboard] 📋 Restoring session');
-          
-          setSessionStartTime(data.startTime);
-          setCurrentStatus(data.status || OfficeStatus.AVAILABLE);
-          currentStatusRef.current = data.status || OfficeStatus.AVAILABLE;
-          statusChangeTimeRef.current = data.statusChangeTime || data.startTime;
-          
-          markAsInitialized(today);
-          
-          socket.emit('status_change', {
-            userId: user.id,
-            userName: user.name,
-            status: data.status || OfficeStatus.AVAILABLE,
-            role: user.role,
-            activity: 1,
-          });
-          
-          scheduleImmediateSave();
-          
-          console.log('[Dashboard] ✅ Session restored');
-          return;
-        }
-      } catch (e) {
-        console.error('[Dashboard] Failed to restore:', e);
-      }
-    }
-    
-    if (!isAlreadyInitialized(today)) {
-      const newStartTime = now;
-      setSessionStartTime(newStartTime);
-      setCurrentStatus(OfficeStatus.AVAILABLE);
-      currentStatusRef.current = OfficeStatus.AVAILABLE;
-      statusChangeTimeRef.current = newStartTime;
-      
-      localStorage.setItem(sessionKey, JSON.stringify({
-        date: today,
-        startTime: newStartTime,
-        status: OfficeStatus.AVAILABLE,
-        statusChangeTime: newStartTime
-      }));
-      
-      saveSessionStats({
-        date: today,
-        productiveMinutes: 0,
-        lunchMinutes: 0,
-        snacksMinutes: 0,
-        refreshmentMinutes: 0,
-        feedbackMinutes: 0,
-        crossUtilMinutes: 0,
-        lastSavedAt: now
-      });
-      
-      socket.emit('status_change', {
-        userId: user.id,
-        userName: user.name,
-        status: OfficeStatus.AVAILABLE,
-        role: user.role,
-        activity: 1,
-      });
-      
-      markAsInitialized(today);
-      scheduleImmediateSave();
-      
-      console.log('[Dashboard] ✅ New session initialized');
-    }
-  }, [user.id, user.name, user.role, serverOffsetMs, socket, hasSynced]);
-
-  useEffect(() => {
-    if (!sessionStartTime) return;
-    
-    currentStatusRef.current = currentStatus;
-    
-    const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
-    const now = Date.now() + serverOffsetMs;
-    
-    localStorage.setItem(sessionKey, JSON.stringify({
-      date: toISTDateString(new Date(now)),
-      startTime: sessionStartTime,
-      status: currentStatus,
-      statusChangeTime: statusChangeTimeRef.current
-    }));
-  }, [currentStatus, sessionStartTime, user.id, serverOffsetMs]);
-
-  useEffect(() => {
-    if (!sessionStartTime) return;
-
-    const updateTimer = () => {
+    if (!sessionStartMs) return;
+    const tick = () => {
       const now = Date.now() + serverOffsetMs;
-      setElapsedTime(now - sessionStartTime);
+      setElapsedTime(now - sessionStartMs);
       setStatusDuration(now - statusChangeTimeRef.current);
     };
+    tick();
+    elapsedRef.current = setInterval(tick, 1000);
+    return () => { if (elapsedRef.current) clearInterval(elapsedRef.current); };
+  }, [sessionStartMs, serverOffsetMs]);
 
-    updateTimer();
-    timerRef.current = setInterval(updateTimer, 1000);
-
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [sessionStartTime, serverOffsetMs]);
-
+  // ── sync status from server presence (admin-forced changes) ──────────────
   useEffect(() => {
-    if (!sessionStartTime) return;
-
-    const calculateStats = () => {
-      const currentTime = Date.now() + serverOffsetMs;
-      const todayDate = toISTDateString(new Date(currentTime));
-      const sessionStats = loadSessionStats(todayDate);
-      const currentSessionMinutes = getCurrentSessionMinutes(currentTime);
-      
-      let stats = {
-        productiveMinutes: sessionStats.productiveMinutes,
-        lunchMinutes: sessionStats.lunchMinutes,
-        snacksMinutes: sessionStats.snacksMinutes,
-        refreshmentMinutes: sessionStats.refreshmentMinutes,
-        feedbackMinutes: sessionStats.feedbackMinutes,
-        crossUtilMinutes: sessionStats.crossUtilMinutes,
-        totalMinutes: 0,
-        idleMinutes: 0,
-      };
-
-      switch (currentStatus) {
-        case OfficeStatus.AVAILABLE:
-          stats.productiveMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.LUNCH:
-          stats.lunchMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.SNACKS:
-          stats.snacksMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.REFRESHMENT_BREAK:
-          stats.refreshmentMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.QUALITY_FEEDBACK:
-          stats.feedbackMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.CROSS_UTILIZATION:
-          stats.crossUtilMinutes += currentSessionMinutes;
-          break;
-      }
-
-      try {
-        const idleStore = JSON.parse(localStorage.getItem(IDLE_TRACK_KEY) || '{}');
-        const dayBucket = idleStore[todayDate] || {};
-        const userIdle = dayBucket[user.id] || {};
-        
-        let totalIdleMs = userIdle.idleTotalMs || 0;
-        if (typeof userIdle.idleStartMs === 'number') {
-          totalIdleMs += Math.max(0, currentTime - userIdle.idleStartMs);
-        }
-        
-        stats.idleMinutes = Math.floor(totalIdleMs / 60000);
-      } catch (e) {}
-
-      stats.totalMinutes = stats.productiveMinutes + stats.lunchMinutes + stats.snacksMinutes +
-        stats.refreshmentMinutes + stats.feedbackMinutes + stats.crossUtilMinutes;
-
-      setTodayStats(stats);
-    };
-
-    calculateStats();
-    const interval = setInterval(calculateStats, 1000);
-    
-    return () => clearInterval(interval);
-  }, [sessionStartTime, currentStatus, user.id, serverOffsetMs]);
-
-  const handleStatusChange = (newStatus: OfficeStatus) => {
-    if (!socket || !socket.connected) {
-      alert('Not connected to server. Please wait...');
-      return;
-    }
-
-    if (newStatus === currentStatus) return;
-    
-    isChangingStatusRef.current = true;
-    
-    const now = Date.now() + serverOffsetMs;
-    const today = toISTDateString(new Date(now));
-    const timeInOldStatus = getCurrentSessionMinutes(now);
-    const sessionStats = loadSessionStats(today);
-    
-    console.log('[Dashboard] 🔄 Changing:', currentStatus, '→', newStatus);
-    
-    switch (currentStatus) {
-      case OfficeStatus.AVAILABLE:
-        sessionStats.productiveMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.LUNCH:
-        sessionStats.lunchMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.SNACKS:
-        sessionStats.snacksMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.REFRESHMENT_BREAK:
-        sessionStats.refreshmentMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.QUALITY_FEEDBACK:
-        sessionStats.feedbackMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.CROSS_UTILIZATION:
-        sessionStats.crossUtilMinutes += timeInOldStatus;
-        break;
-    }
-    
-    saveSessionStats(sessionStats);
-    setCurrentStatus(newStatus);
-    currentStatusRef.current = newStatus;
-    statusChangeTimeRef.current = now;
-    
-    socket.emit('status_change', {
-      userId: user.id,
-      userName: user.name,
-      status: newStatus,
-      role: user.role,
-      activity: 1,
-    });
-    
-    setTimeout(() => {
-      saveStatsToDatabase({ immediate: true });
-      isChangingStatusRef.current = false;
-    }, 500);
-  };
-
-  const prevServerStatusRef = useRef<OfficeStatus | null>(null);
-  
-  useEffect(() => {
-    if (isChangingStatusRef.current) return;
-    
-    const myStatus = realtimeStatuses.find(s => s.userId === user.id);
-    if (!myStatus) return;
-    
-    const serverStatus = myStatus.status;
-    const localStatus = currentStatusRef.current;
-    
-    if (prevServerStatusRef.current === serverStatus) return;
-    if (serverStatus === localStatus) {
-      prevServerStatusRef.current = serverStatus;
-      return;
-    }
-    
-    prevServerStatusRef.current = serverStatus;
-    
-    const now = Date.now() + serverOffsetMs;
-    const today = toISTDateString(new Date(now));
-    const timeInOldStatus = getCurrentSessionMinutes(now);
-    const sessionStats = loadSessionStats(today);
-    
-    switch (localStatus) {
-      case OfficeStatus.AVAILABLE:
-        sessionStats.productiveMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.LUNCH:
-        sessionStats.lunchMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.SNACKS:
-        sessionStats.snacksMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.REFRESHMENT_BREAK:
-        sessionStats.refreshmentMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.QUALITY_FEEDBACK:
-        sessionStats.feedbackMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.CROSS_UTILIZATION:
-        sessionStats.crossUtilMinutes += timeInOldStatus;
-        break;
-    }
-    
-    saveSessionStats(sessionStats);
-    setCurrentStatus(serverStatus);
-    currentStatusRef.current = serverStatus;
-    statusChangeTimeRef.current = now;
-    
-    scheduleImmediateSave();
+    if (isChangingRef.current) return;
+    const mine = realtimeStatuses.find(s => s.userId === user.id);
+    if (!mine) return;
+    const srv = mine.status as OfficeStatus;
+    if (srv === currentStatusRef.current) return;
+    setCurrentStatus(srv);
+    currentStatusRef.current    = srv;
+    statusChangeTimeRef.current = Date.now() + serverOffsetMs;
   }, [realtimeStatuses, user.id, serverOffsetMs]);
 
-  useEffect(() => {
-    if (!socket) return;
+  // ── handle button click ───────────────────────────────────────────────────
+  const handleStatusChange = (newStatus: OfficeStatus) => {
+    if (!socket?.connected) { alert('Not connected. Please wait...'); return; }
+    if (newStatus === currentStatus) return;
 
-    const handleClearIdleData = () => {
-      try {
-        localStorage.removeItem(IDLE_TRACK_KEY);
-        setTodayStats(prev => ({ ...prev, idleMinutes: 0 }));
-        scheduleImmediateSave();
-      } catch (e) {}
-    };
+    isChangingRef.current = true;
+    const now = Date.now() + serverOffsetMs;
 
-    socket.on('clear_idle_data', handleClearIdleData);
-    return () => socket.off('clear_idle_data', handleClearIdleData);
-  }, [socket]);
+    // Optimistic UI update
+    setCurrentStatus(newStatus);
+    currentStatusRef.current    = newStatus;
+    statusChangeTimeRef.current = now;
 
-  const formatTime = (ms: number): string => {
-    const totalSeconds = Math.floor(ms / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    
-    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-    if (minutes > 0) return `${minutes}m ${seconds}s`;
-    return `${seconds}s`;
+    // Server computes the time delta and writes to day_summary immediately
+    socket.emit('status_change', {
+      userId: user.id, userName: user.name,
+      status: newStatus, role: user.role, activity: 1,
+    });
+
+    // Refresh stats from DB after server has written (~800ms)
+    setTimeout(() => {
+      fetchToday(false);
+      isChangingRef.current = false;
+    }, 800);
   };
 
-  const formatMinutes = (minutes: number): string => {
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-  };
+  // ── render ────────────────────────────────────────────────────────────────
+  const cfg         = getStatusConfig(currentStatus);
+  const CurrentIcon = cfg.icon;
+  const myPresence  = realtimeStatuses.find(s => s.userId === user.id);
+  const isActive    = myPresence?.activity === 1;
 
-  const getStatusConfig = (status: OfficeStatus) => {
-    switch (status) {
-      case OfficeStatus.AVAILABLE:
-        return { icon: CheckCircle2, color: 'from-emerald-500 to-teal-600', textColor: 'text-emerald-600', label: 'Available' };
-      case OfficeStatus.LUNCH:
-        return { icon: Coffee, color: 'from-orange-500 to-amber-600', textColor: 'text-orange-600', label: 'Lunch' };
-      case OfficeStatus.SNACKS:
-        return { icon: Cookie, color: 'from-yellow-500 to-orange-500', textColor: 'text-yellow-600', label: 'Snacks' };
-      case OfficeStatus.REFRESHMENT_BREAK:
-        return { icon: Sparkles, color: 'from-blue-500 to-cyan-600', textColor: 'text-blue-600', label: 'Break' };
-      case OfficeStatus.QUALITY_FEEDBACK:
-        return { icon: MessageSquare, color: 'from-purple-500 to-pink-600', textColor: 'text-purple-600', label: 'Feedback' };
-      case OfficeStatus.CROSS_UTILIZATION:
-        return { icon: Users, color: 'from-indigo-500 to-purple-600', textColor: 'text-indigo-600', label: 'Cross-Util' };
-      default:
-        return { icon: Activity, color: 'from-slate-500 to-slate-600', textColor: 'text-slate-600', label: status };
-    }
-  };
-
-  const currentConfig = getStatusConfig(currentStatus);
-  const CurrentIcon = currentConfig.icon;
-  const availableStatuses = settings.availableStatuses || [
+  const availableStatuses = (settings.availableStatuses || [
     OfficeStatus.AVAILABLE, OfficeStatus.LUNCH, OfficeStatus.SNACKS,
     OfficeStatus.REFRESHMENT_BREAK, OfficeStatus.QUALITY_FEEDBACK, OfficeStatus.CROSS_UTILIZATION,
-  ];
-
-  const myStatus = realtimeStatuses.find(s => s.userId === user.id);
-  const isActive = myStatus?.activity === 1;
+  ]) as OfficeStatus[];
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-24 animate-in fade-in duration-700" style={{ animationFillMode: 'backwards' }}>
-      <div className="mb-8">
-        <h1 className="text-3xl font-semibold text-slate-900 dark:text-white mb-2">
-          Welcome back, {user.name}! 👋
-        </h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Track your productivity • Auto-saves immediately to database on every change
-        </p>
+
+      {/* Header */}
+      <div className="flex items-start justify-between mb-8">
+        <div>
+          <h1 className="text-3xl font-semibold text-slate-900 dark:text-white mb-2">
+            Welcome back, {user.name}! 👋
+          </h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            All timing tracked server-side · saved to database on every status change
+          </p>
+        </div>
+        <button
+          onClick={() => fetchToday(true)}
+          disabled={isFetching}
+          className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-slate-800/80 border border-slate-200/50 dark:border-slate-700/50 rounded-xl text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-all shadow-sm"
+        >
+          <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+          Refresh
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        {/* Status panel */}
         <div className="lg:col-span-2 bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Current Status</h2>
-            {!hasSynced && <span className="text-xs text-amber-600 dark:text-amber-400 animate-pulse font-medium">Syncing...</span>}
+            {!hasSynced && <span className="text-xs text-amber-500 animate-pulse font-medium">Syncing…</span>}
           </div>
 
-          <div className={`flex items-center gap-4 p-6 rounded-2xl bg-gradient-to-br ${currentConfig.color} mb-6 shadow-lg`}>
-            <div className="w-16 h-16 rounded-2xl bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl flex items-center justify-center shadow-lg">
-              <CurrentIcon className={`w-8 h-8 ${currentConfig.textColor}`} strokeWidth={2.5} />
+          {/* Active status banner */}
+          <div className={`flex items-center gap-4 p-6 rounded-2xl bg-gradient-to-br ${cfg.color} mb-6 shadow-lg`}>
+            <div className="w-16 h-16 rounded-2xl bg-white/90 dark:bg-slate-900/90 flex items-center justify-center shadow-lg">
+              <CurrentIcon className={`w-8 h-8 ${cfg.textColor}`} strokeWidth={2.5} />
             </div>
             <div className="flex-1">
-              <h3 className="text-2xl font-semibold text-white mb-1">{currentConfig.label}</h3>
+              <h3 className="text-2xl font-semibold text-white mb-1">{cfg.label}</h3>
               <p className="text-sm text-white/80 font-medium">{formatTime(statusDuration)}</p>
             </div>
             {isActive && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/20 backdrop-blur-xl border border-white/30">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/20 border border-white/30">
                 <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                 <span className="text-xs font-semibold text-white">Active</span>
               </div>
             )}
           </div>
 
+          {/* Status buttons */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {availableStatuses.map((status) => {
-              const config = getStatusConfig(status);
-              const Icon = config.icon;
-              const isSelected = status === currentStatus;
-
+              const sc = getStatusConfig(status);
+              const SI = sc.icon;
+              const sel = status === currentStatus;
               return (
                 <button
                   key={status}
                   onClick={() => handleStatusChange(status)}
-                  disabled={isSelected}
+                  disabled={sel}
                   className={`relative p-4 rounded-2xl border-2 transition-all duration-200 ${
-                    isSelected 
-                      ? `bg-gradient-to-br ${config.color} border-transparent text-white shadow-lg` 
-                      : `bg-slate-50/50 dark:bg-slate-900/50 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 ${config.textColor}`
+                    sel
+                      ? `bg-gradient-to-br ${sc.color} border-transparent text-white shadow-lg`
+                      : `bg-slate-50/50 dark:bg-slate-900/50 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 ${sc.textColor}`
                   }`}
                 >
                   <div className="flex flex-col items-center gap-2">
-                    <Icon className="w-6 h-6" strokeWidth={2.5} />
-                    <span className="text-sm font-semibold">{config.label}</span>
+                    <SI className="w-6 h-6" strokeWidth={2.5} />
+                    <span className="text-sm font-semibold">{sc.label}</span>
                   </div>
-                  {isSelected && <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-white shadow-lg" />}
+                  {sel && <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-white shadow-lg" />}
                 </button>
               );
             })}
           </div>
         </div>
 
+        {/* Session timer */}
         <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-6">Session Timer</h2>
-          
           <div className="text-center mb-6">
             <div className="inline-flex items-center justify-center w-32 h-32 rounded-3xl bg-gradient-to-br from-indigo-500 to-purple-600 mb-4 shadow-2xl shadow-indigo-500/25">
               <Clock className="w-16 h-16 text-white" strokeWidth={2} />
             </div>
             <div className="text-4xl font-semibold text-slate-900 dark:text-white mb-2 font-mono">
-              {formatTime(elapsedTime)}
+              {sessionStartMs ? formatTime(elapsedTime) : '--:--'}
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Total session time</p>
           </div>
-
           <div className="space-y-3">
             <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50">
               <span className="text-sm text-slate-600 dark:text-slate-400">Login</span>
               <span className="text-sm font-semibold text-slate-900 dark:text-white font-mono">
-                {sessionStartTime ? new Date(sessionStartTime).toLocaleTimeString('en-IN', { 
-                  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'
-                }) : '--:--'}
+                {todayStats.loginTime
+                  ? todayStats.loginTime.slice(0, 5)
+                  : '--:--'}
               </span>
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50">
-              <span className="text-sm text-slate-600 dark:text-slate-400">Current</span>
+              <span className="text-sm text-slate-600 dark:text-slate-400">Now</span>
               <span className="text-sm font-semibold text-slate-900 dark:text-white font-mono">
-                {new Date(Date.now() + serverOffsetMs).toLocaleTimeString('en-IN', { 
-                  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'
+                {new Date(Date.now() + serverOffsetMs).toLocaleTimeString('en-IN', {
+                  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
                 })}
               </span>
             </div>
@@ -792,21 +325,28 @@ const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
+      {/* Today's activity — from DB */}
       <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
-        <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-6">Today's Activity</h2>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Today's Activity</h2>
+          <span className="text-xs text-slate-400 dark:text-slate-500">Live from database · auto-refreshes every 30s</span>
+        </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
-          {[
-            { label: 'Productive', value: todayStats.productiveMinutes, icon: CheckCircle2, color: 'from-emerald-500 to-teal-600' },
-            { label: 'Lunch', value: todayStats.lunchMinutes, icon: Coffee, color: 'from-orange-500 to-amber-600' },
-            { label: 'Snacks', value: todayStats.snacksMinutes, icon: Cookie, color: 'from-yellow-500 to-orange-500' },
-            { label: 'Break', value: todayStats.refreshmentMinutes, icon: Sparkles, color: 'from-blue-500 to-cyan-600' },
-            { label: 'Feedback', value: todayStats.feedbackMinutes, icon: MessageSquare, color: 'from-purple-500 to-pink-600' },
-            { label: 'Cross-Util', value: todayStats.crossUtilMinutes, icon: Users, color: 'from-indigo-500 to-purple-600' },
-            { label: 'Idle Time', value: todayStats.idleMinutes, icon: Timer, color: 'from-slate-500 to-slate-600' },
-          ].map((stat) => (
-            <div key={stat.label} className="relative group">
-              <div className="p-4 rounded-2xl bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50 hover:border-slate-300 dark:hover:border-slate-600 transition-all duration-200">
+        {isFetching ? (
+          <div className="flex items-center justify-center py-12">
+            <RefreshCw className="w-8 h-8 text-indigo-500 animate-spin" strokeWidth={2} />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            {[
+              { label: 'Productive', value: todayStats.productiveMinutes,  icon: CheckCircle2,  color: 'from-emerald-500 to-teal-600' },
+              { label: 'Lunch',      value: todayStats.lunchMinutes,       icon: Coffee,        color: 'from-orange-500 to-amber-600' },
+              { label: 'Snacks',     value: todayStats.snacksMinutes,      icon: Cookie,        color: 'from-yellow-500 to-orange-500' },
+              { label: 'Break',      value: todayStats.refreshmentMinutes, icon: Sparkles,      color: 'from-blue-500 to-cyan-600' },
+              { label: 'Feedback',   value: todayStats.feedbackMinutes,    icon: MessageSquare, color: 'from-purple-500 to-pink-600' },
+              { label: 'Cross-Util', value: todayStats.crossUtilMinutes,   icon: Users,         color: 'from-indigo-500 to-purple-600' },
+            ].map((stat) => (
+              <div key={stat.label} className="p-4 rounded-2xl bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-700/50 hover:border-slate-300 dark:hover:border-slate-600 transition-all duration-200">
                 <div className="flex items-center gap-2 mb-3">
                   <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${stat.color} flex items-center justify-center shadow-lg`}>
                     <stat.icon className="w-4 h-4 text-white" strokeWidth={2.5} />
@@ -817,9 +357,9 @@ const Dashboard: React.FC<DashboardProps> = ({
                   {formatMinutes(stat.value)}
                 </p>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
