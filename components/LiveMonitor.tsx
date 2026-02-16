@@ -94,6 +94,7 @@ interface UserRowProps {
   settings: AppSettings;
   onUpdateStatus: (userId: string, status: string) => void;
   formatElapsedTime: (s: number) => string;
+  sessionTimes: Map<string, number>; // ✅ NEW: Time from Dashboard
 }
 
 const UserRow: React.FC<UserRowProps> = ({
@@ -103,6 +104,7 @@ const UserRow: React.FC<UserRowProps> = ({
   settings,
   onUpdateStatus,
   formatElapsedTime,
+  sessionTimes, // ✅ NEW
 }) => {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -123,14 +125,8 @@ const UserRow: React.FC<UserRowProps> = ({
 
   const isIdle = activity === 0;
 
-  // ✅ FIXED: Calculate session time from sessionStartTime (like Dashboard shows)
-  const sessionStartTime = (u as any).sessionStartTime;
-  const hasSessionStart = typeof sessionStartTime === 'number' && Number.isFinite(sessionStartTime);
-  
-  // Use session elapsed time if available, otherwise fall back to time since last update
-  const displayElapsedSec = hasSessionStart
-    ? Math.max(0, Math.floor((now - sessionStartTime) / 1000))
-    : Math.max(0, Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000));
+  // ✅ FIXED: Use the exact time sent from Dashboard (not calculated here)
+  const dashboardElapsedSeconds = sessionTimes.get(u.userId) || 0;
 
   return (
     <div className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200">
@@ -147,9 +143,9 @@ const UserRow: React.FC<UserRowProps> = ({
               <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                 {displayName || u.userId}
               </p>
-              {/* ✅ Show session time badge next to name */}
-              <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300 text-xs font-semibold whitespace-nowrap">
-                {formatElapsedTime(displayElapsedSec)}
+              {/* ✅ Show EXACT time from Dashboard */}
+              <span className="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300 text-sm font-bold whitespace-nowrap font-mono">
+                {formatElapsedTime(dashboardElapsedSeconds)}
               </span>
               {isIdle && (
                 <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 text-xs font-semibold whitespace-nowrap">
@@ -203,6 +199,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
 }) => {
   const [now, setNow] = useState(() => Date.now() + serverOffsetMs);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // ✅ NEW: Store session times from Dashboard
+  const [sessionTimes, setSessionTimes] = useState<Map<string, number>>(new Map());
 
   const formatElapsedTime = (seconds: number) => {
     if (!seconds || seconds < 0) return '0s';
@@ -218,6 +216,26 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     const interval = setInterval(() => setNow(Date.now() + serverOffsetMs), 1000);
     return () => clearInterval(interval);
   }, [serverOffsetMs]);
+
+  // ✅ NEW: Listen for session time updates from Dashboard
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleSessionTimeUpdate = (data: { userId: string; elapsedSeconds: number }) => {
+      console.log('[LiveMonitor] ⏱️ Received time update:', data.userId, formatElapsedTime(data.elapsedSeconds));
+      setSessionTimes(prev => {
+        const newMap = new Map(prev);
+        newMap.set(data.userId, data.elapsedSeconds);
+        return newMap;
+      });
+    };
+
+    socket.on('session_time_update', handleSessionTimeUpdate);
+
+    return () => {
+      socket.off('session_time_update', handleSessionTimeUpdate);
+    };
+  }, [socket]);
 
   useEffect(() => {
     if (!hasSynced) return;
@@ -319,7 +337,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         <div className="flex-1">
           <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Live Monitor</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Real-time status tracking • Session time from Dashboard
+            Real-time status • Session times synced from Dashboard
           </p>
         </div>
         <button
@@ -338,15 +356,15 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
       </div>
 
       {/* Notice Banner */}
-      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-4">
+      <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-4">
         <div className="flex items-start gap-3">
-          <Clock className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+          <Clock className="w-5 h-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
           <div>
-            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-1">
-              Session Times Synced from Dashboard
+            <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-100 mb-1">
+              ✅ Live Session Times from Dashboard
             </p>
-            <p className="text-xs text-blue-700 dark:text-blue-300">
-              The time shown next to each user's name is their total session time from login, same as what they see in their Dashboard. This time persists even when users reload their page.
+            <p className="text-xs text-emerald-700 dark:text-emerald-300">
+              Times shown are the EXACT same session times users see in their Dashboard. Updates every 2 seconds. Never resets when users reload their page.
             </p>
           </div>
         </div>
@@ -376,6 +394,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
                   settings={settings}
                   onUpdateStatus={updateStatus}
                   formatElapsedTime={formatElapsedTime}
+                  sessionTimes={sessionTimes} // ✅ Pass Dashboard times
                 />
               ))}
           </div>
