@@ -242,7 +242,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       console.log('[Dashboard] 🔄 Loading session from database...');
       
       try {
-        const serverIp = localStorage.getItem('officely_server_ip') || 'http://localhost:3001';
+        const serverIp = localStorage.getItem('officely_server_ip') || 'https://server2-e3p9.onrender.com';
         const response = await fetch(
           `${serverIp}/api/Office/session-state?userId=${user.id}&date=${today}`
         );
