@@ -73,6 +73,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   const dbSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastDbSaveRef = useRef<number>(0);
   const pendingSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasInitializedRef = useRef<boolean>(false);
 
   const toISTDateString = (d: Date): string => {
     try {
@@ -88,18 +89,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       const dd = String(d.getDate()).padStart(2, '0');
       return `${yyyy}-${mm}-${dd}`;
     }
-  };
-
-  const isAlreadyInitialized = (today: string): boolean => {
-    try {
-      const key = `${INIT_FLAG_KEY}${user.id}`;
-      const stored = localStorage.getItem(key);
-      if (stored) {
-        const data = JSON.parse(stored);
-        return data.date === today && data.initialized === true;
-      }
-    } catch (e) {}
-    return false;
   };
 
   const markAsInitialized = (today: string) => {
@@ -255,95 +244,98 @@ const Dashboard: React.FC<DashboardProps> = ({
     });
   };
 
-  // ✅ NEW: Listen for session state from database
-  useEffect(() => {
-    if (!socket) return;
+  // ✅ SHARED FUNCTION: Restore session from database (used by both socket and HTTP fallback)
+  const restoreSessionFromState = (sessionState: any, serverTime: number) => {
+    if (hasInitializedRef.current) {
+      console.log('[Dashboard] ⚠️ Already initialized, skipping...');
+      return;
+    }
 
-    const handleSessionStateSync = (data: { sessionState: any; serverTime: number }) => {
-      const { sessionState, serverTime } = data;
-      const now = serverTime || (Date.now() + serverOffsetMs);
-      const today = toISTDateString(new Date(now));
+    const now = serverTime || (Date.now() + serverOffsetMs);
+    const today = toISTDateString(new Date(now));
+    
+    console.log('[Dashboard] 📦 Restoring session from state:', sessionState);
+    
+    if (sessionState && sessionState.date === today && sessionState.loginTime && sessionState.loginTime !== '00:00:00') {
+      // ✅ RESTORE existing session from database
+      console.log('[Dashboard] ♻️ Restoring existing session from database');
       
-      console.log('[Dashboard] 📦 Received session state from server:', sessionState);
+      // Parse login time to get session start
+      const [hours, minutes, seconds] = (sessionState.loginTime || '00:00:00').split(':').map(Number);
+      const sessionStart = new Date();
+      sessionStart.setHours(hours, minutes, seconds || 0, 0);
       
-      if (sessionState && sessionState.date === today && sessionState.loginTime && sessionState.loginTime !== '00:00:00') {
-        // ✅ RESTORE existing session from database
-        console.log('[Dashboard] ♻️ Restoring existing session from database');
-        
-        // Parse login time to get session start
-        const [hours, minutes, seconds] = (sessionState.loginTime || '00:00:00').split(':').map(Number);
-        const sessionStart = new Date();
-        sessionStart.setHours(hours, minutes, seconds || 0, 0);
-        
-        setSessionStartTime(sessionStart.getTime());
-        
-        // Load accumulated stats from database
-        const sessionKey = `${SESSION_STATS_KEY}${user.id}`;
-        localStorage.setItem(sessionKey, JSON.stringify({
-          date: today,
-          productiveMinutes: sessionState.productiveMinutes || 0,
-          lunchMinutes: sessionState.lunchMinutes || 0,
-          snacksMinutes: sessionState.snacksMinutes || 0,
-          refreshmentMinutes: sessionState.refreshmentMinutes || 0,
-          feedbackMinutes: sessionState.feedbackMinutes || 0,
-          crossUtilMinutes: sessionState.crossUtilMinutes || 0,
-          lastSavedAt: now
-        }));
-        
-        // Set current status to Available
-        setCurrentStatus(OfficeStatus.AVAILABLE);
-        currentStatusRef.current = OfficeStatus.AVAILABLE;
-        statusChangeTimeRef.current = now;
-        
-        // Save to localStorage as backup
-        const backupKey = `${STORAGE_KEY_PREFIX}${user.id}`;
-        localStorage.setItem(backupKey, JSON.stringify({
-          date: today,
-          startTime: sessionStart.getTime(),
-          status: OfficeStatus.AVAILABLE,
-          statusChangeTime: now
-        }));
-        
-        markAsInitialized(today);
-        scheduleImmediateSave();
-        
-        console.log('[Dashboard] ✅ Session restored:', {
-          loginTime: sessionState.loginTime,
-          productiveMinutes: sessionState.productiveMinutes,
-          totalMinutes: sessionState.totalMinutes,
-          sessionStartTime: new Date(sessionStart).toLocaleTimeString()
-        });
-        
-      } else {
-        // ✅ NEW session - first login of the day
-        console.log('[Dashboard] 🆕 Starting new session');
-        
-        const newStartTime = now;
-        setSessionStartTime(newStartTime);
-        setCurrentStatus(OfficeStatus.AVAILABLE);
-        currentStatusRef.current = OfficeStatus.AVAILABLE;
-        statusChangeTimeRef.current = newStartTime;
-        
-        // Save to localStorage
-        const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
-        localStorage.setItem(sessionKey, JSON.stringify({
-          date: today,
-          startTime: newStartTime,
-          status: OfficeStatus.AVAILABLE,
-          statusChangeTime: newStartTime
-        }));
-        
-        saveSessionStats({
-          date: today,
-          productiveMinutes: 0,
-          lunchMinutes: 0,
-          snacksMinutes: 0,
-          refreshmentMinutes: 0,
-          feedbackMinutes: 0,
-          crossUtilMinutes: 0,
-          lastSavedAt: now
-        });
-        
+      setSessionStartTime(sessionStart.getTime());
+      
+      // Load accumulated stats from database
+      const sessionKey = `${SESSION_STATS_KEY}${user.id}`;
+      localStorage.setItem(sessionKey, JSON.stringify({
+        date: today,
+        productiveMinutes: sessionState.productiveMinutes || 0,
+        lunchMinutes: sessionState.lunchMinutes || 0,
+        snacksMinutes: sessionState.snacksMinutes || 0,
+        refreshmentMinutes: sessionState.refreshmentMinutes || 0,
+        feedbackMinutes: sessionState.feedbackMinutes || 0,
+        crossUtilMinutes: sessionState.crossUtilMinutes || 0,
+        lastSavedAt: now
+      }));
+      
+      // Set current status to Available
+      setCurrentStatus(OfficeStatus.AVAILABLE);
+      currentStatusRef.current = OfficeStatus.AVAILABLE;
+      statusChangeTimeRef.current = now;
+      
+      // Save to localStorage as backup
+      const backupKey = `${STORAGE_KEY_PREFIX}${user.id}`;
+      localStorage.setItem(backupKey, JSON.stringify({
+        date: today,
+        startTime: sessionStart.getTime(),
+        status: OfficeStatus.AVAILABLE,
+        statusChangeTime: now
+      }));
+      
+      markAsInitialized(today);
+      hasInitializedRef.current = true;
+      scheduleImmediateSave();
+      
+      console.log('[Dashboard] ✅ Session restored:', {
+        loginTime: sessionState.loginTime,
+        productiveMinutes: sessionState.productiveMinutes,
+        totalMinutes: sessionState.totalMinutes,
+        sessionStartTime: new Date(sessionStart).toLocaleTimeString()
+      });
+      
+    } else {
+      // ✅ NEW session - first login of the day
+      console.log('[Dashboard] 🆕 Starting new session');
+      
+      const newStartTime = now;
+      setSessionStartTime(newStartTime);
+      setCurrentStatus(OfficeStatus.AVAILABLE);
+      currentStatusRef.current = OfficeStatus.AVAILABLE;
+      statusChangeTimeRef.current = newStartTime;
+      
+      // Save to localStorage
+      const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
+      localStorage.setItem(sessionKey, JSON.stringify({
+        date: today,
+        startTime: newStartTime,
+        status: OfficeStatus.AVAILABLE,
+        statusChangeTime: newStartTime
+      }));
+      
+      saveSessionStats({
+        date: today,
+        productiveMinutes: 0,
+        lunchMinutes: 0,
+        snacksMinutes: 0,
+        refreshmentMinutes: 0,
+        feedbackMinutes: 0,
+        crossUtilMinutes: 0,
+        lastSavedAt: now
+      });
+      
+      if (socket) {
         socket.emit('status_change', {
           userId: user.id,
           userName: user.name,
@@ -351,12 +343,23 @@ const Dashboard: React.FC<DashboardProps> = ({
           role: user.role,
           activity: 1,
         });
-        
-        markAsInitialized(today);
-        scheduleImmediateSave();
-        
-        console.log('[Dashboard] ✅ New session initialized');
       }
+      
+      markAsInitialized(today);
+      hasInitializedRef.current = true;
+      scheduleImmediateSave();
+      
+      console.log('[Dashboard] ✅ New session initialized');
+    }
+  };
+
+  // ✅ PRIMARY: Listen for session state from socket
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleSessionStateSync = (data: { sessionState: any; serverTime: number }) => {
+      console.log('[Dashboard] 📡 Received session_state_sync from socket');
+      restoreSessionFromState(data.sessionState, data.serverTime);
     };
 
     socket.on('session_state_sync', handleSessionStateSync);
@@ -365,6 +368,50 @@ const Dashboard: React.FC<DashboardProps> = ({
       socket.off('session_state_sync', handleSessionStateSync);
     };
   }, [socket, user.id, user.name, user.role, serverOffsetMs]);
+
+  // ✅ FALLBACK: If socket doesn't send data within 3 seconds, fetch from HTTP API
+  useEffect(() => {
+    if (!user.id || !hasSynced) return;
+    
+    const timer = setTimeout(async () => {
+      if (hasInitializedRef.current) {
+        console.log('[Dashboard] ✅ Already initialized via socket, no HTTP fallback needed');
+        return;
+      }
+      
+      console.log('[Dashboard] ⏰ Socket timeout - fetching session state via HTTP...');
+      
+      const now = Date.now() + serverOffsetMs;
+      const today = toISTDateString(new Date(now));
+      
+      try {
+        const serverIp = localStorage.getItem('officely_server_ip') || 'http://localhost:3001';
+        const response = await fetch(
+          `${serverIp}/api/Office/session-state?userId=${user.id}&date=${today}`
+        );
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        console.log('[Dashboard] 📥 HTTP response:', data);
+        
+        if (data.ok) {
+          restoreSessionFromState(data.sessionState, data.serverTime || now);
+        } else {
+          console.error('[Dashboard] ❌ API returned error:', data.error);
+        }
+      } catch (error) {
+        console.error('[Dashboard] ❌ Failed to fetch session state:', error);
+        // Still initialize with empty session rather than staying stuck
+        restoreSessionFromState(null, now);
+      }
+    }, 3000); // Wait 3 seconds for socket, then use HTTP
+    
+    return () => clearTimeout(timer);
+  }, [user.id, hasSynced, serverOffsetMs]);
 
   useEffect(() => {
     if (!socket || !sessionStartTime) return;
@@ -704,7 +751,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         <div className="lg:col-span-2 bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl shadow-black/5 p-6">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Current Status</h2>
-            {!sessionStartTime && <span className="text-xs text-amber-600 dark:text-amber-400 animate-pulse font-medium">Initializing...</span>}
+            {!sessionStartTime && <span className="text-xs text-amber-600 dark:text-amber-400 animate-pulse font-medium">Loading session...</span>}
           </div>
 
           <div className={`flex items-center gap-4 p-6 rounded-2xl bg-gradient-to-br ${currentConfig.color} mb-6 shadow-lg`}>
