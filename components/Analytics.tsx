@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+
 import ReactDOM from 'react-dom';
 import { DaySummary, UserRole, User } from '../types';
 import {
