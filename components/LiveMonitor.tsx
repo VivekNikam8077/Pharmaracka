@@ -109,7 +109,6 @@ const UserRow: React.FC<UserRowProps> = ({
 
   const config = getStatusConfig(u.status);
   
-  // ✅ Activity state comes from server/Dashboard
   const rawActivity = typeof u.activity === 'number' ? u.activity : 2;
   const lastAt = typeof u.lastActivityAt === 'number'
     ? u.lastActivityAt
@@ -122,11 +121,16 @@ const UserRow: React.FC<UserRowProps> = ({
     activity === 0 ? 'bg-amber-500' :
     'bg-slate-400';
 
-  // ✅ Show idle badge only if activity is 0 (idle)
   const isIdle = activity === 0;
 
-  // ✅ Time since last update from database
-  const timeSinceUpdate = Math.max(0, Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000));
+  // ✅ FIXED: Calculate session time from sessionStartTime (like Dashboard shows)
+  const sessionStartTime = (u as any).sessionStartTime;
+  const hasSessionStart = typeof sessionStartTime === 'number' && Number.isFinite(sessionStartTime);
+  
+  // Use session elapsed time if available, otherwise fall back to time since last update
+  const displayElapsedSec = hasSessionStart
+    ? Math.max(0, Math.floor((now - sessionStartTime) / 1000))
+    : Math.max(0, Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000));
 
   return (
     <div className="group px-6 py-5 hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-all duration-200">
@@ -143,6 +147,10 @@ const UserRow: React.FC<UserRowProps> = ({
               <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                 {displayName || u.userId}
               </p>
+              {/* ✅ Show session time badge next to name */}
+              <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300 text-xs font-semibold whitespace-nowrap">
+                {formatElapsedTime(displayElapsedSec)}
+              </span>
               {isIdle && (
                 <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 text-xs font-semibold whitespace-nowrap">
                   Idle
@@ -154,15 +162,11 @@ const UserRow: React.FC<UserRowProps> = ({
                 {React.cloneElement(config.icon as any, { className: 'w-3.5 h-3.5', strokeWidth: 2.5 })}
                 {u.status}
               </div>
-              <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                <Clock className="w-3.5 h-3.5" strokeWidth={2.5} />
-                {formatElapsedTime(timeSinceUpdate)}
-              </div>
             </div>
           </div>
         </div>
 
-        {/* Override Button - Only for changing status, NOT timing */}
+        {/* Override Button */}
         <div className="relative flex-shrink-0">
           <button
             ref={btnRef}
@@ -210,13 +214,11 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     return `${secs}s`;
   };
 
-  // ✅ Clock updates
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now() + serverOffsetMs), 1000);
     return () => clearInterval(interval);
   }, [serverOffsetMs]);
 
-  // ✅ Ensure current user appears in presence
   useEffect(() => {
     if (!hasSynced) return;
     const self = realtimeStatuses.find((r) => r.userId === user.id);
@@ -231,7 +233,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     }
   }, [user.id, socket, hasSynced, realtimeStatuses, user.name, user.role]);
 
-  // ✅ Status change - ONLY changes state, timing is tracked by Dashboard
   const updateStatus = useCallback((targetUserId: string, newStatus: string) => {
     let targetUser = users.find(u => u.id === targetUserId);
     if (!targetUser && targetUserId === user.id) targetUser = user;
@@ -261,12 +262,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
       activity: targetUserId === user.id ? 1 : undefined,
     } as RealtimeStatus;
 
-    // ✅ Send to backend - timing will be calculated by Dashboard component
     if (socket) {
       socket.emit('status_change', statusData);
     }
 
-    // ✅ Update local state immediately for UI responsiveness
     setRealtimeStatuses(prev => {
       const filtered = prev.filter(s => s.userId !== targetUserId);
       return [...filtered, statusData];
@@ -275,15 +274,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     console.log('[LiveMonitor] ✅ Status change sent to server');
   }, [users, user, realtimeStatuses, socket, setRealtimeStatuses]);
 
-  // ✅ Manual refresh - gets latest data from server
   const handleRefresh = useCallback(() => {
     if (isRefreshing) return;
     
     setIsRefreshing(true);
     console.log('[LiveMonitor] 🔄 Refreshing data from server...');
     
-    // The system_sync event will automatically update realtimeStatuses
-    // Just trigger a re-sync by emitting a status change for current user
     if (socket?.connected) {
       const self = realtimeStatuses.find(r => r.userId === user.id);
       if (self) {
@@ -323,7 +319,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         <div className="flex-1">
           <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Live Monitor</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Real-time status tracking • Timing data from Dashboard
+            Real-time status tracking • Session time from Dashboard
           </p>
         </div>
         <button
@@ -344,13 +340,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
       {/* Notice Banner */}
       <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-4">
         <div className="flex items-start gap-3">
-          <Activity className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+          <Clock className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
           <div>
             <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-1">
-              Data Source: Real-time Database
+              Session Times Synced from Dashboard
             </p>
             <p className="text-xs text-blue-700 dark:text-blue-300">
-              Status changes update immediately. Time tracking is calculated by each user's Dashboard and auto-saved to database every 5 minutes.
+              The time shown next to each user's name is their total session time from login, same as what they see in their Dashboard. This time persists even when users reload their page.
             </p>
           </div>
         </div>
