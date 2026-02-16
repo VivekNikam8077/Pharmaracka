@@ -27,7 +27,8 @@ const STORAGE_KEY_PREFIX = 'officely_session_';
 const SESSION_STATS_KEY = 'officely_session_stats_';
 const IDLE_TRACK_KEY = 'officely_idle_track_v1';
 const INIT_FLAG_KEY = 'officely_init_flag_';
-const TIME_UPDATE_INTERVAL = 5 * 60 * 1000;
+const TIME_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes backup save
+const DEBOUNCE_SAVE_MS = 1000; // Debounce immediate saves by 1 second
 
 interface SessionStats {
   date: string;
@@ -70,6 +71,8 @@ const Dashboard: React.FC<DashboardProps> = ({
   const isChangingStatusRef = useRef(false);
   const currentStatusRef = useRef<OfficeStatus>(OfficeStatus.AVAILABLE);
   const dbSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastDbSaveRef = useRef<number>(0);
+  const pendingSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const toISTDateString = (d: Date): string => {
     try {
@@ -146,12 +149,20 @@ const Dashboard: React.FC<DashboardProps> = ({
     return Math.floor((now - statusChangeTimeRef.current) / 60000);
   };
 
-  // ✅ NEW: Save current stats to database
-  const saveStatsToDatabase = async () => {
+  // ✅ IMMEDIATE SAVE: Save current stats to database with debouncing
+  const saveStatsToDatabase = async (options?: { immediate?: boolean }) => {
     if (!socket || !sessionStartTime) return;
     
+    const now = Date.now() + serverOffsetMs;
+    const timeSinceLastSave = now - lastDbSaveRef.current;
+    
+    // Debounce saves unless immediate flag is set
+    if (!options?.immediate && timeSinceLastSave < DEBOUNCE_SAVE_MS) {
+      console.log('[Dashboard] ⏳ Debouncing save, too soon since last save');
+      return;
+    }
+    
     try {
-      const now = Date.now() + serverOffsetMs;
       const today = toISTDateString(new Date(now));
       const sessionStats = loadSessionStats(today);
       const currentSessionMinutes = getCurrentSessionMinutes(now);
@@ -219,8 +230,12 @@ const Dashboard: React.FC<DashboardProps> = ({
         isLeave: false
       });
       
-      console.log('[Dashboard] 💾 Saved to database:', {
+      lastDbSaveRef.current = now;
+      
+      const saveType = options?.immediate ? '⚡ IMMEDIATE' : '💾 DEBOUNCED';
+      console.log(`[Dashboard] ${saveType} save to database:`, {
         date: today,
+        status: currentStatus,
         productiveMinutes,
         totalMinutes,
         loginTime,
@@ -229,6 +244,18 @@ const Dashboard: React.FC<DashboardProps> = ({
     } catch (e) {
       console.error('[Dashboard] ❌ Error saving to database:', e);
     }
+  };
+
+  // ✅ DEBOUNCED IMMEDIATE SAVE: Schedule an immediate save after a short delay
+  const scheduleImmediateSave = () => {
+    if (pendingSaveTimeoutRef.current) {
+      clearTimeout(pendingSaveTimeoutRef.current);
+    }
+    
+    pendingSaveTimeoutRef.current = setTimeout(() => {
+      saveStatsToDatabase({ immediate: true });
+      pendingSaveTimeoutRef.current = null;
+    }, 500); // Wait 500ms to batch rapid changes
   };
 
   const sendPeriodicUpdate = () => {
@@ -246,7 +273,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     console.log('[Dashboard] ⏰ Sent 5-min update');
   };
 
-  // Periodic updates
+  // Periodic updates (keep for connection health)
   useEffect(() => {
     if (!socket || !sessionStartTime) return;
 
@@ -265,7 +292,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
   }, [socket, sessionStartTime, currentStatus, user.id, user.name, user.role]);
 
-  // ✅ NEW: Auto-save to database every 5 minutes
+  // ✅ BACKUP: Auto-save to database every 5 minutes as backup
   useEffect(() => {
     if (!socket || !sessionStartTime) return;
 
@@ -273,11 +300,13 @@ const Dashboard: React.FC<DashboardProps> = ({
       clearInterval(dbSaveIntervalRef.current);
     }
 
-    // Save immediately
-    saveStatsToDatabase();
+    // Initial save
+    saveStatsToDatabase({ immediate: true });
     
-    // Then save every 5 minutes
-    dbSaveIntervalRef.current = setInterval(saveStatsToDatabase, TIME_UPDATE_INTERVAL);
+    // Periodic backup save every 5 minutes
+    dbSaveIntervalRef.current = setInterval(() => {
+      saveStatsToDatabase({ immediate: true });
+    }, TIME_UPDATE_INTERVAL);
 
     return () => {
       if (dbSaveIntervalRef.current) {
@@ -285,7 +314,20 @@ const Dashboard: React.FC<DashboardProps> = ({
         dbSaveIntervalRef.current = null;
       }
     };
-  }, [socket, sessionStartTime, currentStatus, user.id]);
+  }, [socket, sessionStartTime]);
+
+  // ✅ CLEANUP: Save on component unmount
+  useEffect(() => {
+    return () => {
+      if (pendingSaveTimeoutRef.current) {
+        clearTimeout(pendingSaveTimeoutRef.current);
+      }
+      // Final save on unmount
+      if (socket && sessionStartTime) {
+        saveStatsToDatabase({ immediate: true });
+      }
+    };
+  }, [socket, sessionStartTime]);
 
   // Initialization
   useEffect(() => {
@@ -311,6 +353,9 @@ const Dashboard: React.FC<DashboardProps> = ({
               status: data.status,
               elapsed: Math.floor((now - data.startTime) / 60000) + 'm'
             });
+            
+            // ✅ IMMEDIATE SAVE: Load from DB on restore
+            scheduleImmediateSave();
           }
         } catch (e) {}
       }
@@ -392,6 +437,9 @@ const Dashboard: React.FC<DashboardProps> = ({
     
     markAsInitialized(today);
     console.log('[Dashboard] ✅ Initialized');
+    
+    // ✅ IMMEDIATE SAVE: Initial save after initialization
+    scheduleImmediateSave();
   }, [user.id, user.name, user.role, serverOffsetMs, socket, hasSynced]);
 
   useEffect(() => {
@@ -547,13 +595,13 @@ const Dashboard: React.FC<DashboardProps> = ({
       activity: 1,
     });
     
-    // ✅ Save to database immediately on status change
+    console.log('[Dashboard] ✅ Status changed');
+    
+    // ✅ IMMEDIATE SAVE: Save to database immediately after status change
     setTimeout(() => {
-      saveStatsToDatabase();
+      saveStatsToDatabase({ immediate: true });
       isChangingStatusRef.current = false;
     }, 500);
-    
-    console.log('[Dashboard] ✅ Changed');
   };
 
   const prevServerStatusRef = useRef<OfficeStatus | null>(null);
@@ -607,6 +655,9 @@ const Dashboard: React.FC<DashboardProps> = ({
     setCurrentStatus(serverStatus);
     currentStatusRef.current = serverStatus;
     statusChangeTimeRef.current = now;
+    
+    // ✅ IMMEDIATE SAVE: Save to database when server updates status
+    scheduleImmediateSave();
   }, [realtimeStatuses, user.id, serverOffsetMs]);
 
   useEffect(() => {
@@ -616,6 +667,9 @@ const Dashboard: React.FC<DashboardProps> = ({
       try {
         localStorage.removeItem(IDLE_TRACK_KEY);
         setTodayStats(prev => ({ ...prev, idleMinutes: 0 }));
+        
+        // ✅ IMMEDIATE SAVE: Save after clearing idle data
+        scheduleImmediateSave();
       } catch (e) {}
     };
 
@@ -676,7 +730,7 @@ const Dashboard: React.FC<DashboardProps> = ({
           Welcome back, {user.name}! 👋
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Track your productivity • Auto-saves to database every 5 minutes
+          Track your productivity • Auto-saves immediately to database on every change
         </p>
       </div>
 
