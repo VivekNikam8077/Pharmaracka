@@ -29,6 +29,7 @@ const IDLE_TRACK_KEY = 'officely_idle_track_v1';
 const INIT_FLAG_KEY = 'officely_init_flag_';
 const TIME_UPDATE_INTERVAL = 5 * 60 * 1000;
 const DEBOUNCE_SAVE_MS = 1000;
+const LIVE_MONITOR_UPDATE_INTERVAL = 2000; // ✅ Send time to Live Monitor every 2 seconds
 
 interface SessionStats {
   date: string;
@@ -68,6 +69,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   const statusChangeTimeRef = useRef<number>(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const periodicUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveMonitorUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null); // ✅ NEW
   const isChangingStatusRef = useRef(false);
   const currentStatusRef = useRef<OfficeStatus>(OfficeStatus.AVAILABLE);
   const dbSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -242,20 +244,53 @@ const Dashboard: React.FC<DashboardProps> = ({
     }, 500);
   };
 
+  // ✅ Send current elapsed time to Live Monitor every 2 seconds
+  const sendLiveMonitorUpdate = () => {
+    if (!socket || !socket.connected || !sessionStartTime) return;
+    
+    const now = Date.now() + serverOffsetMs;
+    const currentElapsedMs = now - sessionStartTime;
+    const currentElapsedSeconds = Math.floor(currentElapsedMs / 1000);
+    
+    socket.emit('update_session_time', {
+      userId: user.id,
+      userName: user.name,
+      elapsedSeconds: currentElapsedSeconds,
+      loginTime: sessionStartTime,
+    });
+  };
+
   const sendPeriodicUpdate = () => {
     if (!socket || !socket.connected || !sessionStartTime) return;
     
-    // ✅ Include sessionStartTime so Live Monitor can show accurate elapsed time
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
       status: currentStatus,
       role: user.role,
       activity: 1,
-      sessionStartTime: sessionStartTime, // ✅ Send session start for Live Monitor
       periodicUpdate: true,
     });
   };
+
+  // ✅ Setup Live Monitor time updates (every 2 seconds)
+  useEffect(() => {
+    if (!socket || !sessionStartTime) return;
+
+    if (liveMonitorUpdateRef.current) {
+      clearInterval(liveMonitorUpdateRef.current);
+    }
+
+    sendLiveMonitorUpdate(); // Send immediately
+    liveMonitorUpdateRef.current = setInterval(sendLiveMonitorUpdate, LIVE_MONITOR_UPDATE_INTERVAL);
+
+    return () => {
+      if (liveMonitorUpdateRef.current) {
+        clearInterval(liveMonitorUpdateRef.current);
+        liveMonitorUpdateRef.current = null;
+      }
+    };
+  }, [socket, sessionStartTime, user.id, user.name]);
 
   useEffect(() => {
     if (!socket || !sessionStartTime) return;
@@ -330,14 +365,12 @@ const Dashboard: React.FC<DashboardProps> = ({
           
           markAsInitialized(today);
           
-          // ✅ Send status with sessionStartTime for Live Monitor
           socket.emit('status_change', {
             userId: user.id,
             userName: user.name,
             status: data.status || OfficeStatus.AVAILABLE,
             role: user.role,
             activity: 1,
-            sessionStartTime: data.startTime, // ✅ Include for Live Monitor
           });
           
           scheduleImmediateSave();
@@ -375,14 +408,12 @@ const Dashboard: React.FC<DashboardProps> = ({
         lastSavedAt: now
       });
       
-      // ✅ Send status with sessionStartTime for Live Monitor
       socket.emit('status_change', {
         userId: user.id,
         userName: user.name,
         status: OfficeStatus.AVAILABLE,
         role: user.role,
         activity: 1,
-        sessionStartTime: newStartTime, // ✅ Include for Live Monitor
       });
       
       markAsInitialized(today);
@@ -537,14 +568,12 @@ const Dashboard: React.FC<DashboardProps> = ({
     currentStatusRef.current = newStatus;
     statusChangeTimeRef.current = now;
     
-    // ✅ Include sessionStartTime for Live Monitor
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
       status: newStatus,
       role: user.role,
       activity: 1,
-      sessionStartTime: sessionStartTime, // ✅ For Live Monitor
     });
     
     setTimeout(() => {
