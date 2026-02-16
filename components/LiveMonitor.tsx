@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import { Socket } from 'socket.io-client';
 import { User, OfficeStatus, RealtimeStatus, AppSettings } from '../types';
 import { getStatusConfig } from '../constants';
-import { Activity, UserCog, Clock, Users } from 'lucide-react';
+import { Activity, UserCog, Clock, Users, RefreshCw } from 'lucide-react';
 
 interface LiveMonitorProps {
   user: User;
@@ -93,7 +93,6 @@ interface UserRowProps {
   now: number;
   settings: AppSettings;
   onUpdateStatus: (userId: string, status: string) => void;
-  getIdleInfo: (userId: string, fallback?: number) => { idleStartMs: number | null; idleTotalMs: number };
   formatElapsedTime: (s: number) => string;
 }
 
@@ -103,13 +102,14 @@ const UserRow: React.FC<UserRowProps> = ({
   now,
   settings,
   onUpdateStatus,
-  getIdleInfo,
   formatElapsedTime,
 }) => {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
 
   const config = getStatusConfig(u.status);
+  
+  // ✅ Activity state comes from server/Dashboard
   const rawActivity = typeof u.activity === 'number' ? u.activity : 2;
   const lastAt = typeof u.lastActivityAt === 'number'
     ? u.lastActivityAt
@@ -122,14 +122,10 @@ const UserRow: React.FC<UserRowProps> = ({
     activity === 0 ? 'bg-amber-500' :
     'bg-slate-400';
 
-  const shouldShowIdle = activity === 0 && u.status === OfficeStatus.AVAILABLE;
-  const idleInfo = shouldShowIdle ? getIdleInfo(u.userId, now) : { idleStartMs: null, idleTotalMs: 0 };
-  
-  // ✅ FIXED: Calculate idle time properly
-  const idleElapsedSec = (shouldShowIdle && typeof idleInfo.idleStartMs === 'number')
-    ? Math.max(0, Math.floor((now - idleInfo.idleStartMs) / 1000))
-    : 0;
+  // ✅ Show idle badge only if activity is 0 (idle)
+  const isIdle = activity === 0;
 
+  // ✅ Time since last update from database
   const timeSinceUpdate = Math.max(0, Math.floor((now - new Date(u.lastUpdate).getTime()) / 1000));
 
   return (
@@ -147,9 +143,9 @@ const UserRow: React.FC<UserRowProps> = ({
               <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                 {displayName || u.userId}
               </p>
-              {shouldShowIdle && (
+              {isIdle && (
                 <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 text-xs font-semibold whitespace-nowrap">
-                  Idle {formatElapsedTime(idleElapsedSec)}
+                  Idle
                 </span>
               )}
             </div>
@@ -166,7 +162,7 @@ const UserRow: React.FC<UserRowProps> = ({
           </div>
         </div>
 
-        {/* Override Button */}
+        {/* Override Button - Only for changing status, NOT timing */}
         <div className="relative flex-shrink-0">
           <button
             ref={btnRef}
@@ -202,85 +198,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
   serverOffsetMs = 0,
 }) => {
   const [now, setNow] = useState(() => Date.now() + serverOffsetMs);
-
-  const toISTDateString = (ms: number) => {
-    try {
-      return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(new Date(ms));
-    } catch (e) {
-      return new Date(ms).toISOString().slice(0, 10);
-    }
-  };
-
-  // ✅ FIXED: Properly handle idle tracking with cleanup when user becomes active
-  const getIdleInfo = useCallback((userId: string, fallbackStartMs?: number) => {
-    try {
-      const raw = localStorage.getItem('officely_idle_track_v1');
-      if (!raw) return { idleStartMs: null as number | null, idleTotalMs: 0 };
-      
-      const parsed = JSON.parse(raw);
-      const dayKey = toISTDateString(Date.now() + serverOffsetMs);
-      const dayBucket = parsed?.[dayKey];
-      const row = dayBucket?.[userId];
-      
-      const idleStartMs = (typeof row?.idleStartMs === 'number' && Number.isFinite(row.idleStartMs))
-        ? row.idleStartMs
-        : null;
-      const idleTotalMs = (typeof row?.idleTotalMs === 'number' && Number.isFinite(row.idleTotalMs))
-        ? row.idleTotalMs
-        : 0;
-
-      // ✅ CRITICAL FIX: Check if user is currently active
-      const userStatus = realtimeStatuses.find(s => s.userId === userId);
-      const isActive = userStatus?.activity === 1;
-      
-      // ✅ If user is active, clear idleStartMs to prevent showing old idle time
-      if (isActive && idleStartMs !== null) {
-        console.log(`[LiveMonitor] 🔄 User ${userId} is now active, clearing idle start time`);
-        
-        try {
-          const store = parsed && typeof parsed === 'object' ? parsed : {};
-          const bucket = store?.[dayKey] && typeof store[dayKey] === 'object' ? store[dayKey] : {};
-          
-          // Clear idleStartMs since user is active
-          bucket[userId] = { 
-            ...(bucket[userId] || {}), 
-            idleStartMs: null, // ✅ Clear the start time
-            idleTotalMs // Keep the accumulated total
-          };
-          
-          store[dayKey] = bucket;
-          localStorage.setItem('officely_idle_track_v1', JSON.stringify(store));
-          
-          console.log(`[LiveMonitor] ✅ Cleared idle start for ${userId}`);
-        } catch (err) {
-          console.error('[LiveMonitor] Failed to clear idle start:', err);
-        }
-        
-        return { idleStartMs: null, idleTotalMs };
-      }
-
-      // If we have a fallback and no current idleStartMs, use fallback
-      if (!idleStartMs && typeof fallbackStartMs === 'number' && Number.isFinite(fallbackStartMs)) {
-        try {
-          const store = parsed && typeof parsed === 'object' ? parsed : {};
-          const bucket = store?.[dayKey] && typeof store[dayKey] === 'object' ? store[dayKey] : {};
-          bucket[userId] = { ...(bucket[userId] || {}), idleStartMs: fallbackStartMs, idleTotalMs };
-          store[dayKey] = bucket;
-          localStorage.setItem('officely_idle_track_v1', JSON.stringify(store));
-        } catch (err) {}
-        return { idleStartMs: fallbackStartMs, idleTotalMs };
-      }
-      
-      return { idleStartMs, idleTotalMs };
-    } catch (e) {
-      return { idleStartMs: null as number | null, idleTotalMs: 0 };
-    }
-  }, [serverOffsetMs, realtimeStatuses]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const formatElapsedTime = (seconds: number) => {
     if (!seconds || seconds < 0) return '0s';
@@ -292,11 +210,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     return `${secs}s`;
   };
 
+  // ✅ Clock updates
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now() + serverOffsetMs), 1000);
     return () => clearInterval(interval);
   }, [serverOffsetMs]);
 
+  // ✅ Ensure current user appears in presence
   useEffect(() => {
     if (!hasSynced) return;
     const self = realtimeStatuses.find((r) => r.userId === user.id);
@@ -311,6 +231,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     }
   }, [user.id, socket, hasSynced, realtimeStatuses, user.name, user.role]);
 
+  // ✅ Status change - ONLY changes state, timing is tracked by Dashboard
   const updateStatus = useCallback((targetUserId: string, newStatus: string) => {
     let targetUser = users.find(u => u.id === targetUserId);
     if (!targetUser && targetUserId === user.id) targetUser = user;
@@ -329,6 +250,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
     }
     if (!targetUser) return;
 
+    console.log('[LiveMonitor] 🔄 Changing status for', targetUserId, 'to', newStatus);
+
     const statusData = {
       userId: targetUserId,
       userName: targetUser.name,
@@ -338,15 +261,48 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
       activity: targetUserId === user.id ? 1 : undefined,
     } as RealtimeStatus;
 
+    // ✅ Send to backend - timing will be calculated by Dashboard component
     if (socket) {
       socket.emit('status_change', statusData);
     }
 
+    // ✅ Update local state immediately for UI responsiveness
     setRealtimeStatuses(prev => {
       const filtered = prev.filter(s => s.userId !== targetUserId);
       return [...filtered, statusData];
     });
+
+    console.log('[LiveMonitor] ✅ Status change sent to server');
   }, [users, user, realtimeStatuses, socket, setRealtimeStatuses]);
+
+  // ✅ Manual refresh - gets latest data from server
+  const handleRefresh = useCallback(() => {
+    if (isRefreshing) return;
+    
+    setIsRefreshing(true);
+    console.log('[LiveMonitor] 🔄 Refreshing data from server...');
+    
+    // The system_sync event will automatically update realtimeStatuses
+    // Just trigger a re-sync by emitting a status change for current user
+    if (socket?.connected) {
+      const self = realtimeStatuses.find(r => r.userId === user.id);
+      if (self) {
+        socket.emit('status_change', {
+          userId: user.id,
+          userName: user.name,
+          role: user.role,
+          status: self.status,
+          activity: 1,
+          periodicUpdate: true,
+        });
+      }
+    }
+    
+    setTimeout(() => {
+      setIsRefreshing(false);
+      console.log('[LiveMonitor] ✅ Refresh complete');
+    }, 1000);
+  }, [isRefreshing, socket, realtimeStatuses, user]);
 
   const visibleUsers = realtimeStatuses.filter((r) => r.userId !== user.id);
 
@@ -366,12 +322,37 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
         </div>
         <div className="flex-1">
           <h2 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight">Live Monitor</h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Real-time user activity tracking</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+            Real-time status tracking • Timing data from Dashboard
+          </p>
         </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 backdrop-blur-xl rounded-2xl border border-slate-200/50 dark:border-slate-700/50 shadow-lg text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+          <span className="text-sm font-semibold">Refresh</span>
+        </button>
         <div className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-2xl border border-slate-200/50 dark:border-slate-700/50 shadow-lg">
           <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" strokeWidth={2.5} />
           <span className="text-sm font-semibold text-slate-900 dark:text-white">{visibleUsers.length}</span>
           <span className="text-xs text-slate-500 dark:text-slate-400">Active</span>
+        </div>
+      </div>
+
+      {/* Notice Banner */}
+      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-4">
+        <div className="flex items-start gap-3">
+          <Activity className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+          <div>
+            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-1">
+              Data Source: Real-time Database
+            </p>
+            <p className="text-xs text-blue-700 dark:text-blue-300">
+              Status changes update immediately. Time tracking is calculated by each user's Dashboard and auto-saved to database every 5 minutes.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -398,7 +379,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({
                   now={now}
                   settings={settings}
                   onUpdateStatus={updateStatus}
-                  getIdleInfo={getIdleInfo}
                   formatElapsedTime={formatElapsedTime}
                 />
               ))}
