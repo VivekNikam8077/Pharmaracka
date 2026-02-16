@@ -27,8 +27,8 @@ const STORAGE_KEY_PREFIX = 'officely_session_';
 const SESSION_STATS_KEY = 'officely_session_stats_';
 const IDLE_TRACK_KEY = 'officely_idle_track_v1';
 const INIT_FLAG_KEY = 'officely_init_flag_';
-const TIME_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes backup save
-const DEBOUNCE_SAVE_MS = 1000; // Debounce immediate saves by 1 second
+const TIME_UPDATE_INTERVAL = 5 * 60 * 1000;
+const DEBOUNCE_SAVE_MS = 1000;
 
 interface SessionStats {
   date: string;
@@ -149,16 +149,13 @@ const Dashboard: React.FC<DashboardProps> = ({
     return Math.floor((now - statusChangeTimeRef.current) / 60000);
   };
 
-  // ✅ IMMEDIATE SAVE: Save current stats to database with debouncing
   const saveStatsToDatabase = async (options?: { immediate?: boolean }) => {
     if (!socket || !sessionStartTime) return;
     
     const now = Date.now() + serverOffsetMs;
     const timeSinceLastSave = now - lastDbSaveRef.current;
     
-    // Debounce saves unless immediate flag is set
     if (!options?.immediate && timeSinceLastSave < DEBOUNCE_SAVE_MS) {
-      console.log('[Dashboard] ⏳ Debouncing save, too soon since last save');
       return;
     }
     
@@ -167,7 +164,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       const sessionStats = loadSessionStats(today);
       const currentSessionMinutes = getCurrentSessionMinutes(now);
       
-      // Calculate total including current session
       let productiveMinutes = sessionStats.productiveMinutes;
       let lunchMinutes = sessionStats.lunchMinutes;
       let snacksMinutes = sessionStats.snacksMinutes;
@@ -213,7 +209,6 @@ const Dashboard: React.FC<DashboardProps> = ({
         timeZone: 'Asia/Kolkata'
       });
       
-      // Send to backend
       socket.emit('save_daily_stats', {
         userId: user.id,
         userName: user.name,
@@ -231,22 +226,11 @@ const Dashboard: React.FC<DashboardProps> = ({
       });
       
       lastDbSaveRef.current = now;
-      
-      const saveType = options?.immediate ? '⚡ IMMEDIATE' : '💾 DEBOUNCED';
-      console.log(`[Dashboard] ${saveType} save to database:`, {
-        date: today,
-        status: currentStatus,
-        productiveMinutes,
-        totalMinutes,
-        loginTime,
-        logoutTime
-      });
     } catch (e) {
       console.error('[Dashboard] ❌ Error saving to database:', e);
     }
   };
 
-  // ✅ DEBOUNCED IMMEDIATE SAVE: Schedule an immediate save after a short delay
   const scheduleImmediateSave = () => {
     if (pendingSaveTimeoutRef.current) {
       clearTimeout(pendingSaveTimeoutRef.current);
@@ -255,25 +239,24 @@ const Dashboard: React.FC<DashboardProps> = ({
     pendingSaveTimeoutRef.current = setTimeout(() => {
       saveStatsToDatabase({ immediate: true });
       pendingSaveTimeoutRef.current = null;
-    }, 500); // Wait 500ms to batch rapid changes
+    }, 500);
   };
 
   const sendPeriodicUpdate = () => {
     if (!socket || !socket.connected || !sessionStartTime) return;
     
+    // ✅ Include sessionStartTime so Live Monitor can show accurate elapsed time
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
       status: currentStatus,
       role: user.role,
       activity: 1,
+      sessionStartTime: sessionStartTime, // ✅ Send session start for Live Monitor
       periodicUpdate: true,
     });
-    
-    console.log('[Dashboard] ⏰ Sent 5-min update');
   };
 
-  // Periodic updates (keep for connection health)
   useEffect(() => {
     if (!socket || !sessionStartTime) return;
 
@@ -292,7 +275,6 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
   }, [socket, sessionStartTime, currentStatus, user.id, user.name, user.role]);
 
-  // ✅ BACKUP: Auto-save to database every 5 minutes as backup
   useEffect(() => {
     if (!socket || !sessionStartTime) return;
 
@@ -300,10 +282,8 @@ const Dashboard: React.FC<DashboardProps> = ({
       clearInterval(dbSaveIntervalRef.current);
     }
 
-    // Initial save
     saveStatsToDatabase({ immediate: true });
     
-    // Periodic backup save every 5 minutes
     dbSaveIntervalRef.current = setInterval(() => {
       saveStatsToDatabase({ immediate: true });
     }, TIME_UPDATE_INTERVAL);
@@ -316,92 +296,61 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
   }, [socket, sessionStartTime]);
 
-  // ✅ CLEANUP: Save on component unmount
   useEffect(() => {
     return () => {
       if (pendingSaveTimeoutRef.current) {
         clearTimeout(pendingSaveTimeoutRef.current);
       }
-      // Final save on unmount
       if (socket && sessionStartTime) {
         saveStatsToDatabase({ immediate: true });
       }
     };
   }, [socket, sessionStartTime]);
 
-  // Initialization
   useEffect(() => {
     if (!socket || !hasSynced) return;
     
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
     
-    if (isAlreadyInitialized(today)) {
-      const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
-      const stored = localStorage.getItem(sessionKey);
-      
-      if (stored) {
-        try {
-          const data = JSON.parse(stored);
-          if (data.date === today && data.startTime) {
-            setSessionStartTime(data.startTime);
-            setCurrentStatus(data.status || OfficeStatus.AVAILABLE);
-            currentStatusRef.current = data.status || OfficeStatus.AVAILABLE;
-            statusChangeTimeRef.current = data.statusChangeTime || data.startTime;
-            
-            console.log('[Dashboard] 📋 Restored:', {
-              status: data.status,
-              elapsed: Math.floor((now - data.startTime) / 60000) + 'm'
-            });
-            
-            // ✅ IMMEDIATE SAVE: Load from DB on restore
-            scheduleImmediateSave();
-          }
-        } catch (e) {}
-      }
-      return;
-    }
-    
     const sessionKey = `${STORAGE_KEY_PREFIX}${user.id}`;
     const stored = localStorage.getItem(sessionKey);
-    let initialStatus = OfficeStatus.AVAILABLE;
     
     if (stored) {
       try {
         const data = JSON.parse(stored);
+        
         if (data.date === today && data.startTime) {
+          console.log('[Dashboard] 📋 Restoring session');
+          
           setSessionStartTime(data.startTime);
           setCurrentStatus(data.status || OfficeStatus.AVAILABLE);
           currentStatusRef.current = data.status || OfficeStatus.AVAILABLE;
           statusChangeTimeRef.current = data.statusChangeTime || data.startTime;
-          initialStatus = data.status || OfficeStatus.AVAILABLE;
-        } else {
-          const newStartTime = now;
-          setSessionStartTime(newStartTime);
-          setCurrentStatus(OfficeStatus.AVAILABLE);
-          currentStatusRef.current = OfficeStatus.AVAILABLE;
-          statusChangeTimeRef.current = newStartTime;
           
-          localStorage.setItem(sessionKey, JSON.stringify({
-            date: today,
-            startTime: newStartTime,
-            status: OfficeStatus.AVAILABLE,
-            statusChangeTime: newStartTime
-          }));
+          markAsInitialized(today);
           
-          saveSessionStats({
-            date: today,
-            productiveMinutes: 0,
-            lunchMinutes: 0,
-            snacksMinutes: 0,
-            refreshmentMinutes: 0,
-            feedbackMinutes: 0,
-            crossUtilMinutes: 0,
-            lastSavedAt: now
+          // ✅ Send status with sessionStartTime for Live Monitor
+          socket.emit('status_change', {
+            userId: user.id,
+            userName: user.name,
+            status: data.status || OfficeStatus.AVAILABLE,
+            role: user.role,
+            activity: 1,
+            sessionStartTime: data.startTime, // ✅ Include for Live Monitor
           });
+          
+          scheduleImmediateSave();
+          
+          console.log('[Dashboard] ✅ Session restored');
+          return;
         }
-      } catch (e) {}
-    } else {
+      } catch (e) {
+        console.error('[Dashboard] Failed to restore:', e);
+      }
+    }
+    
+    if (!isAlreadyInitialized(today)) {
       const newStartTime = now;
       setSessionStartTime(newStartTime);
       setCurrentStatus(OfficeStatus.AVAILABLE);
@@ -425,21 +374,22 @@ const Dashboard: React.FC<DashboardProps> = ({
         crossUtilMinutes: 0,
         lastSavedAt: now
       });
+      
+      // ✅ Send status with sessionStartTime for Live Monitor
+      socket.emit('status_change', {
+        userId: user.id,
+        userName: user.name,
+        status: OfficeStatus.AVAILABLE,
+        role: user.role,
+        activity: 1,
+        sessionStartTime: newStartTime, // ✅ Include for Live Monitor
+      });
+      
+      markAsInitialized(today);
+      scheduleImmediateSave();
+      
+      console.log('[Dashboard] ✅ New session initialized');
     }
-    
-    socket.emit('status_change', {
-      userId: user.id,
-      userName: user.name,
-      status: initialStatus,
-      role: user.role,
-      activity: 1,
-    });
-    
-    markAsInitialized(today);
-    console.log('[Dashboard] ✅ Initialized');
-    
-    // ✅ IMMEDIATE SAVE: Initial save after initialization
-    scheduleImmediateSave();
   }, [user.id, user.name, user.role, serverOffsetMs, socket, hasSynced]);
 
   useEffect(() => {
@@ -559,7 +509,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     const timeInOldStatus = getCurrentSessionMinutes(now);
     const sessionStats = loadSessionStats(today);
     
-    console.log('[Dashboard] 🔄 Changing:', currentStatus, '→', newStatus, `(${timeInOldStatus}m)`);
+    console.log('[Dashboard] 🔄 Changing:', currentStatus, '→', newStatus);
     
     switch (currentStatus) {
       case OfficeStatus.AVAILABLE:
@@ -587,17 +537,16 @@ const Dashboard: React.FC<DashboardProps> = ({
     currentStatusRef.current = newStatus;
     statusChangeTimeRef.current = now;
     
+    // ✅ Include sessionStartTime for Live Monitor
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
       status: newStatus,
       role: user.role,
       activity: 1,
+      sessionStartTime: sessionStartTime, // ✅ For Live Monitor
     });
     
-    console.log('[Dashboard] ✅ Status changed');
-    
-    // ✅ IMMEDIATE SAVE: Save to database immediately after status change
     setTimeout(() => {
       saveStatsToDatabase({ immediate: true });
       isChangingStatusRef.current = false;
@@ -628,8 +577,6 @@ const Dashboard: React.FC<DashboardProps> = ({
     const timeInOldStatus = getCurrentSessionMinutes(now);
     const sessionStats = loadSessionStats(today);
     
-    console.log('[Dashboard] 📡 Server update:', localStatus, '→', serverStatus);
-    
     switch (localStatus) {
       case OfficeStatus.AVAILABLE:
         sessionStats.productiveMinutes += timeInOldStatus;
@@ -656,7 +603,6 @@ const Dashboard: React.FC<DashboardProps> = ({
     currentStatusRef.current = serverStatus;
     statusChangeTimeRef.current = now;
     
-    // ✅ IMMEDIATE SAVE: Save to database when server updates status
     scheduleImmediateSave();
   }, [realtimeStatuses, user.id, serverOffsetMs]);
 
@@ -667,8 +613,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       try {
         localStorage.removeItem(IDLE_TRACK_KEY);
         setTodayStats(prev => ({ ...prev, idleMinutes: 0 }));
-        
-        // ✅ IMMEDIATE SAVE: Save after clearing idle data
         scheduleImmediateSave();
       } catch (e) {}
     };
