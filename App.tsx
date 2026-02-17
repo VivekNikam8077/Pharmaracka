@@ -334,6 +334,13 @@ const App: React.FC = () => {
   const freshLoginRef = useRef(false); // FIX: Track fresh login
   const applyLogoutRef = useRef<(opts?: any) => void>(() => {});
 
+  const clearDashboardSessionStatsCache = useCallback((userId?: string | null) => {
+    if (!userId) return;
+    try {
+      localStorage.removeItem(`officely_session_stats_${userId}`);
+    } catch (e) {}
+  }, []);
+
   // ==================== LOGOUT HANDLER ====================
   const applyLogout = useCallback(async (opts?: {
     auth?: User | null;
@@ -486,6 +493,9 @@ const App: React.FC = () => {
 
   // ==================== DEBUG SESSION FUNCTION ====================
   const debugSession = useCallback(async () => {
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (!isLocalhost) return;
+
     const auth = StorageManager.getAuth();
     if (!auth?.email) {
       console.log('[debug] No stored auth or email');
@@ -503,6 +513,13 @@ const App: React.FC = () => {
     try {
       const serverIp = localStorage.getItem(STORAGE_KEYS.SERVER_IP) || 'https://server2-e3p9.onrender.com';
       const res = await fetch(`${serverIp}/api/Office/debug_session?userId=${auth.id}`);
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok) {
+        return;
+      }
+      if (!ct.toLowerCase().includes('application/json')) {
+        return;
+      }
       const data = await res.json();
       console.log('[debug] Server state:', data);
     } catch (e) {
@@ -575,7 +592,9 @@ const App: React.FC = () => {
           return;
         }
         const json = await res.json();
-        const snapshot = Array.isArray(json?.snapshot) ? json.snapshot : [];
+        const snapshot = Array.isArray(json?.snapshot)
+          ? json.snapshot
+          : (Array.isArray(json?.presence) ? json.presence : []);
         if (snapshot.length === 0) return;
 
         setRealtimeStatuses((prev) => {
@@ -590,20 +609,41 @@ const App: React.FC = () => {
           );
 
           for (const s of snapshot) {
-            const userId = String(s?.user_id ?? '').trim();
+            const userId = String((s as any)?.userId ?? (s as any)?.user_id ?? '').trim();
             if (!userId) continue;
 
             const existing = byId.get(userId);
-            if (!existing) continue;
 
-            const nextActivityRaw = Number(s?.status);
+            const rawActivityOrStatus = (s as any)?.activity;
+            const rawStatusField = (s as any)?.status;
+            const nextActivityRaw = Number(
+              (typeof rawActivityOrStatus === 'number' || typeof rawActivityOrStatus === 'string')
+                ? rawActivityOrStatus
+                : ((typeof rawStatusField === 'number' || typeof rawStatusField === 'string') ? rawStatusField : undefined)
+            );
             const nextActivity = (nextActivityRaw === 0 || nextActivityRaw === 1 || nextActivityRaw === 2)
               ? (nextActivityRaw as 0 | 1 | 2)
               : undefined;
-            const updatedAtRaw = (s as any)?.updatedAt ?? (s as any)?.updated_at;
-            const nextUpdatedAt = (typeof updatedAtRaw === 'number' && Number.isFinite(updatedAtRaw))
-              ? updatedAtRaw
-              : undefined;
+            const updatedAtRaw = (s as any)?.lastActivityAt ?? (s as any)?.updatedAt ?? (s as any)?.updated_at;
+            let nextUpdatedAt: number | undefined;
+            if (typeof updatedAtRaw === 'number' && Number.isFinite(updatedAtRaw)) {
+              nextUpdatedAt = updatedAtRaw;
+            } else if (typeof updatedAtRaw === 'string' && updatedAtRaw.trim()) {
+              const raw = updatedAtRaw.trim();
+              // Postgres bigint can arrive as numeric string
+              if (/^\d+$/.test(raw)) {
+                const n = Number(raw);
+                nextUpdatedAt = Number.isFinite(n) ? n : undefined;
+              } else {
+                const parsed = Date.parse(raw);
+                nextUpdatedAt = Number.isFinite(parsed) ? parsed : undefined;
+              }
+            }
+
+            // Normalize seconds -> ms
+            if (typeof nextUpdatedAt === 'number' && Number.isFinite(nextUpdatedAt) && nextUpdatedAt < 10_000_000_000) {
+              nextUpdatedAt = nextUpdatedAt * 1000;
+            }
 
             const prevActivity = (existing && typeof existing.activity === 'number') ? existing.activity : undefined;
             const prevIdleStart = dayBucket?.[userId]?.idleStartMs;
@@ -615,7 +655,11 @@ const App: React.FC = () => {
             const nextIsIdle = nextActivity === 0;
             const prevIsIdle = prevActivity === 0;
 
-            const currentStatus = (existing?.status || OfficeStatus.AVAILABLE) as OfficeStatus;
+            const payloadStatusRaw = (s as any)?.status;
+            const payloadStatus = (typeof payloadStatusRaw === 'string' && payloadStatusRaw.trim())
+              ? payloadStatusRaw.trim()
+              : undefined;
+            const currentStatus = ((existing?.status || payloadStatus || OfficeStatus.AVAILABLE) as OfficeStatus);
             const allowIdleTracking = currentStatus === OfficeStatus.AVAILABLE;
 
             if (!allowIdleTracking) {
@@ -639,7 +683,9 @@ const App: React.FC = () => {
                 idleStartMs: effectiveTs,
                 idleTotalMs: prevIdleTotalMs,
               };
-            } else if (!nextIsIdle && prevIsIdle) {
+            } else if (!nextIsIdle) {
+              // Close any open idle window as soon as we are not idle,
+              // even if prevActivity is missing (common after reload).
               if (typeof prevIdleStartMs === 'number') {
                 const delta = Math.max(0, effectiveTs - prevIdleStartMs);
                 dayBucket[userId] = {
@@ -647,7 +693,7 @@ const App: React.FC = () => {
                   idleStartMs: null,
                   idleTotalMs: prevIdleTotalMs + delta,
                 };
-              } else {
+              } else if (prevIsIdle) {
                 dayBucket[userId] = {
                   ...(dayBucket[userId] || {}),
                   idleStartMs: null,
@@ -656,13 +702,33 @@ const App: React.FC = () => {
               }
             }
 
-            const existingLast = typeof existing.lastActivityAt === 'number' ? existing.lastActivityAt : undefined;
+            const existingLast = typeof existing?.lastActivityAt === 'number' ? existing.lastActivityAt : undefined;
             const shouldBump = typeof nextUpdatedAt === 'number' && (!existingLast || nextUpdatedAt > existingLast);
 
+            const didActivityChange = typeof nextActivity === 'number'
+              && typeof prevActivity === 'number'
+              && nextActivity !== prevActivity;
+
+            const shouldInitActivityUpdatedAt = typeof (existing as any)?.activityUpdatedAt !== 'number'
+              && typeof nextActivity === 'number'
+              && typeof nextUpdatedAt === 'number';
+
+            const nextUserName = String((s as any)?.userName ?? (s as any)?.user_name ?? existing?.userName ?? '').trim();
+            const nextRole = (s as any)?.role ?? existing?.role;
+            const nextLastUpdate = String((s as any)?.lastUpdate ?? (s as any)?.last_update ?? existing?.lastUpdate ?? '').trim();
+
             byId.set(userId, {
-              ...existing,
+              userId,
+              userName: nextUserName || existing?.userName || userId,
+              role: nextRole || existing?.role,
+              status: currentStatus,
+              lastUpdate: nextLastUpdate || existing?.lastUpdate || new Date(nowMs).toISOString(),
+              ...(existing || {}),
               activity: nextActivity,
-              ...(shouldBump ? { lastActivityAt: nextUpdatedAt, activityUpdatedAt: nextUpdatedAt } : {}),
+              ...(shouldBump ? { lastActivityAt: nextUpdatedAt } : {}),
+              ...(((didActivityChange || shouldInitActivityUpdatedAt) && typeof nextUpdatedAt === 'number')
+                ? { activityUpdatedAt: nextUpdatedAt }
+                : {}),
             });
           }
 
@@ -798,22 +864,46 @@ const App: React.FC = () => {
         }
       } catch (e) {}
 
-      setRealtimeStatuses(prev => {
+      setRealtimeStatuses((prev) => {
         const existing = prev.find((p) => p.userId === data.userId);
         const incomingLastAt = (data as any)?.lastActivityAt;
-        const normalizedLastAt = (typeof incomingLastAt === 'number' && Number.isFinite(incomingLastAt))
-          ? incomingLastAt
-          : (existing?.lastActivityAt);
+        let normalizedLastAt: number | undefined;
+        if (typeof incomingLastAt === 'number' && Number.isFinite(incomingLastAt)) {
+          normalizedLastAt = incomingLastAt;
+        } else if (typeof incomingLastAt === 'string' && incomingLastAt.trim() && /^\d+$/.test(incomingLastAt.trim())) {
+          const n = Number(incomingLastAt.trim());
+          normalizedLastAt = Number.isFinite(n) ? n : undefined;
+        } else {
+          normalizedLastAt = existing?.lastActivityAt;
+        }
+
+        if (typeof normalizedLastAt === 'number' && Number.isFinite(normalizedLastAt) && normalizedLastAt < 10_000_000_000) {
+          normalizedLastAt = normalizedLastAt * 1000;
+        }
+
+        const incomingActivity = (data as any)?.activity;
+        const nextActivity = (typeof incomingActivity === 'number' && Number.isFinite(incomingActivity))
+          ? incomingActivity
+          : existing?.activity;
+        const prevActivity = existing?.activity;
+        const didActivityChange = (typeof nextActivity === 'number' && typeof prevActivity === 'number')
+          ? nextActivity !== prevActivity
+          : false;
+
+        const shouldInitActivityUpdatedAt = typeof (existing as any)?.activityUpdatedAt !== 'number'
+          && typeof nextActivity === 'number'
+          && typeof normalizedLastAt === 'number';
 
         const normalized: RealtimeStatus = {
+          ...(existing || {}),
           ...(data as any),
-          ...(typeof normalizedLastAt === 'number' ? {
-            lastActivityAt: normalizedLastAt,
-            activityUpdatedAt: normalizedLastAt
-          } : {}),
+          ...(typeof normalizedLastAt === 'number' ? { lastActivityAt: normalizedLastAt } : {}),
+          ...(((didActivityChange || shouldInitActivityUpdatedAt) && typeof normalizedLastAt === 'number')
+            ? { activityUpdatedAt: normalizedLastAt }
+            : {}),
         } as RealtimeStatus;
 
-        const filtered = prev.filter(s => s.userId !== data.userId);
+        const filtered = prev.filter((s) => s.userId !== data.userId);
         const next = [...filtered, normalized];
         realtimeStatusesRef.current = next;
         return next;
@@ -889,11 +979,6 @@ const App: React.FC = () => {
       setUser(authenticatedUser);
       setView('dashboard');
       StorageManager.saveAuth(authenticatedUser);
-
-      // Debug session after login
-      setTimeout(() => {
-        debugSession();
-      }, 1000);
     });
 
     newSocket.on('auth_failure', ({ message }) => {
