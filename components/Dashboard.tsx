@@ -745,12 +745,10 @@ const Dashboard: React.FC<DashboardProps> = ({
   const lastAt = typeof myStatus?.activityUpdatedAt === 'number'
     ? myStatus.activityUpdatedAt
     : (typeof myStatus?.lastActivityAt === 'number' ? myStatus.lastActivityAt : undefined);
-  const nowMs = Date.now() + (serverOffsetMs || 0);
   const hasActivityTs = allowIdleTracking && typeof lastAt === 'number' && Number.isFinite(lastAt);
   const activity = hasActivityTs ? rawActivity : 2;
   const isIdle = allowIdleTracking && activity === 0;
   const isActive = allowIdleTracking && activity === 1;
-  const activityAgeSeconds = (hasActivityTs && typeof lastAt === 'number') ? Math.max(0, Math.floor((nowMs - lastAt) / 1000)) : 0;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-24">
@@ -779,7 +777,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/20 border border-white/30">
                 <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                 <span className="text-xs font-semibold text-white">
-                  {isIdle ? 'Idle' : 'Active'} {formatTime(activityAgeSeconds)}
+                  {isIdle ? 'Idle' : 'Active'}
                 </span>
               </div>
             )}
