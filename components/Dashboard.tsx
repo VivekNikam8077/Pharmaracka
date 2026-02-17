@@ -25,7 +25,7 @@ interface DashboardProps {
 
 const SESSION_STATS_KEY = 'officely_session_stats_';
 const IDLE_TRACK_KEY = 'officely_idle_track_v1';
-const TIME_UPDATE_INTERVAL = 30_000; // Save every 30 seconds instead of 5 minutes
+const TIME_UPDATE_INTERVAL = 30_000;
 
 interface SessionStats {
   date: string;
@@ -37,6 +37,8 @@ interface SessionStats {
   feedbackMinutes: number;
   crossUtilMinutes: number;
   lastSavedAt: number;
+  currentStatus?: OfficeStatus;
+  statusChangeMs?: number;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({
@@ -51,6 +53,8 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [statusDuration, setStatusDuration] = useState(0);
+  const [dbSnapshot, setDbSnapshot] = useState<any>(null);
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
   const [todayStats, setTodayStats] = useState({
     productiveMinutes: 0,
     lunchMinutes: 0,
@@ -67,12 +71,59 @@ const Dashboard: React.FC<DashboardProps> = ({
   const saveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentStatusRef = useRef<OfficeStatus>(OfficeStatus.AVAILABLE);
   const isChangingStatusRef = useRef(false);
+  const didInitRef = useRef(false);
 
   const toISTDateString = (d: Date): string => {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d);
+    } catch (e) {
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  };
+
+  const normalizeDbSessionState = (raw: any) => {
+    if (!raw) return null;
+    return {
+      loginTime: raw.loginTime ?? raw.logintime,
+      logoutTime: raw.logoutTime ?? raw.logouttime,
+      productiveMinutes: raw.productiveMinutes ?? raw.productiveminutes,
+      lunchMinutes: raw.lunchMinutes ?? raw.lunchminutes,
+      snacksMinutes: raw.snacksMinutes ?? raw.snacksminutes,
+      refreshmentMinutes: raw.refreshmentMinutes ?? raw.refreshmentminutes,
+      feedbackMinutes: raw.feedbackMinutes ?? raw.feedbackminutes,
+      crossUtilMinutes: raw.crossUtilMinutes ?? raw.crossutilminutes,
+      totalMinutes: raw.totalMinutes ?? raw.totalminutes,
+      isLeave: raw.isLeave ?? raw.isleave,
+      lastupdate: raw.lastupdate ?? raw.lastUpdate,
+    };
+  };
+
+  const normalizeOfficeStatus = (value: any): OfficeStatus => {
+    const v = String(value || '').trim();
+    if (!v) return OfficeStatus.AVAILABLE;
+
+    // Handle common aliases / older labels
+    const lower = v.toLowerCase();
+    if (lower === 'feedback') return OfficeStatus.QUALITY_FEEDBACK;
+    if (lower === 'quality feedback') return OfficeStatus.QUALITY_FEEDBACK;
+    if (lower === 'break') return OfficeStatus.REFRESHMENT_BREAK;
+    if (lower === 'refreshment') return OfficeStatus.REFRESHMENT_BREAK;
+    if (lower === 'cross util') return OfficeStatus.CROSS_UTILIZATION;
+    if (lower === 'cross-util') return OfficeStatus.CROSS_UTILIZATION;
+    if (lower === 'cross utilization') return OfficeStatus.CROSS_UTILIZATION;
+
+    // If it's already one of the enum values, keep it
+    const all = Object.values(OfficeStatus) as string[];
+    if (all.includes(v)) return v as OfficeStatus;
+    return OfficeStatus.AVAILABLE;
   };
 
   const toISTTimeString = (d: Date): string => {
@@ -80,6 +131,75 @@ const Dashboard: React.FC<DashboardProps> = ({
     const mm = String(d.getMinutes()).padStart(2, '0');
     const ss = String(d.getSeconds()).padStart(2, '0');
     return `${hh}:${mm}:${ss}`;
+  };
+
+  const fetchDbSnapshot = async (todayOverride?: string) => {
+    try {
+      const now = Date.now() + serverOffsetMs;
+      const today = todayOverride || toISTDateString(new Date(now));
+      const serverIp = getBackendUrl();
+      const response = await fetch(`${serverIp}/api/Office/session-state?userId=${user.id}&date=${today}`);
+      const data = await response.json();
+      if (data?.ok) {
+        setDbSnapshot(normalizeDbSessionState(data.sessionState));
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const manualSyncNow = async () => {
+    if (isManualSyncing) return;
+    setIsManualSyncing(true);
+    try {
+      await saveToDatabase();
+      await fetchDbSnapshot();
+    } finally {
+      setIsManualSyncing(false);
+    }
+  };
+
+  const getBackendUrl = (): string => {
+    try {
+      const savedServer = localStorage.getItem('officely_server_ip');
+      const isIpv4 = (v: string) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(v);
+      const envServer = (import.meta as any)?.env?.VITE_BACKEND_URL as string | undefined;
+      const localhostDefault = 'https://server2-e3p9.onrender.com';
+
+      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const isHttps = window.location.protocol === 'https:';
+      const isRenderHost = /\.onrender\.com$/i.test(window.location.hostname);
+
+      if (savedServer) {
+        return (savedServer.startsWith('http://') || savedServer.startsWith('https://'))
+          ? savedServer
+          : (isIpv4(savedServer)
+            ? `${isHttps ? 'https' : 'http'}://${savedServer}:3001`
+            : `https://${savedServer}`);
+      }
+
+      if (envServer) return envServer;
+
+      return isLocalhost
+        ? localhostDefault
+        : (isHttps || isRenderHost ? localhostDefault : `http://${window.location.hostname}:3001`);
+    } catch (e) {}
+
+    return 'https://server2-e3p9.onrender.com';
+  };
+
+  const parseISTLoginMs = (dateStr: string, loginTime: string): number | null => {
+    try {
+      const parts = String(loginTime || '').split(':').map((x) => Number(x));
+      if (parts.length < 2) return null;
+      const hh = String(parts[0] ?? 0).padStart(2, '0');
+      const mm = String(parts[1] ?? 0).padStart(2, '0');
+      const ss = String(parts[2] ?? 0).padStart(2, '0');
+      const ms = new Date(`${dateStr}T${hh}:${mm}:${ss}+05:30`).getTime();
+      return Number.isFinite(ms) ? ms : null;
+    } catch (e) {
+      return null;
+    }
   };
 
   const getCurrentSessionMinutes = (now: number): number => {
@@ -108,43 +228,68 @@ const Dashboard: React.FC<DashboardProps> = ({
   // ✅ SAVE TO DATABASE (called frequently)
   const saveToDatabase = async () => {
     if (!socket || !sessionStartTime) return;
+    if (!socket.connected) return;
     
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
-    const localStats = loadFromLocalStorage(today);
-    const currentSessionMinutes = getCurrentSessionMinutes(now);
-    
-    let productiveMinutes = localStats?.productiveMinutes || 0;
-    let lunchMinutes = localStats?.lunchMinutes || 0;
-    let snacksMinutes = localStats?.snacksMinutes || 0;
-    let refreshmentMinutes = localStats?.refreshmentMinutes || 0;
-    let feedbackMinutes = localStats?.feedbackMinutes || 0;
-    let crossUtilMinutes = localStats?.crossUtilMinutes || 0;
-    
-    // Add current session time to appropriate bucket
-    switch (currentStatus) {
-      case OfficeStatus.AVAILABLE:
-        productiveMinutes += currentSessionMinutes;
-        break;
-      case OfficeStatus.LUNCH:
-        lunchMinutes += currentSessionMinutes;
-        break;
-      case OfficeStatus.SNACKS:
-        snacksMinutes += currentSessionMinutes;
-        break;
-      case OfficeStatus.REFRESHMENT_BREAK:
-        refreshmentMinutes += currentSessionMinutes;
-        break;
-      case OfficeStatus.QUALITY_FEEDBACK:
-        feedbackMinutes += currentSessionMinutes;
-        break;
-      case OfficeStatus.CROSS_UTILIZATION:
-        crossUtilMinutes += currentSessionMinutes;
-        break;
+    const existing = loadFromLocalStorage(today);
+    const base: SessionStats = existing || {
+      date: today,
+      loginTime: toISTTimeString(new Date(sessionStartTime)),
+      productiveMinutes: 0,
+      lunchMinutes: 0,
+      snacksMinutes: 0,
+      refreshmentMinutes: 0,
+      feedbackMinutes: 0,
+      crossUtilMinutes: 0,
+      // Important: if we have no local cache yet, seed lastSavedAt from sessionStartTime.
+      // This lets the first autosave catch up minutes since login instead of staying at 0.
+      lastSavedAt: sessionStartTime,
+    };
+
+    // Keep local status timer fields up to date (for tab switch / reload stability)
+    base.currentStatus = currentStatusRef.current;
+    base.statusChangeMs = statusChangeTimeRef.current;
+
+    // Persist only the new whole minutes since the last save
+    const deltaMinutes = Math.max(0, Math.floor((now - (base.lastSavedAt || now)) / 60000));
+
+    if (deltaMinutes > 0) {
+      switch (normalizeOfficeStatus(currentStatusRef.current)) {
+        case OfficeStatus.AVAILABLE:
+          base.productiveMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.LUNCH:
+          base.lunchMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.SNACKS:
+          base.snacksMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.REFRESHMENT_BREAK:
+          base.refreshmentMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.QUALITY_FEEDBACK:
+          base.feedbackMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.CROSS_UTILIZATION:
+          base.crossUtilMinutes += deltaMinutes;
+          break;
+      }
+
+      base.lastSavedAt = now;
     }
-    
-    const totalMinutes = productiveMinutes + lunchMinutes + snacksMinutes + 
-                        refreshmentMinutes + feedbackMinutes + crossUtilMinutes;
+
+    // Always persist the latest status timer fields even if no whole minute elapsed.
+    // This prevents statusDuration from resetting to 0 on tab switch/remount.
+    saveToLocalStorage(base);
+
+    const totalMinutes =
+      base.productiveMinutes +
+      base.lunchMinutes +
+      base.snacksMinutes +
+      base.refreshmentMinutes +
+      base.feedbackMinutes +
+      base.crossUtilMinutes;
     
     const loginTime = new Date(sessionStartTime).toLocaleTimeString('en-IN', {
       hour: '2-digit',
@@ -166,50 +311,68 @@ const Dashboard: React.FC<DashboardProps> = ({
       date: today,
       loginTime,
       logoutTime,
-      productiveMinutes,
-      lunchMinutes,
-      snacksMinutes,
-      refreshmentMinutes,
-      feedbackMinutes,
-      crossUtilMinutes,
+      productiveMinutes: base.productiveMinutes,
+      lunchMinutes: base.lunchMinutes,
+      snacksMinutes: base.snacksMinutes,
+      refreshmentMinutes: base.refreshmentMinutes,
+      feedbackMinutes: base.feedbackMinutes,
+      crossUtilMinutes: base.crossUtilMinutes,
       totalMinutes,
       isLeave: false
     });
+
+    setTimeout(() => {
+      fetchDbSnapshot(today);
+    }, 600);
     
-    console.log('[Dashboard] 💾 Saved to DB:', { productiveMinutes, totalMinutes });
+    console.log('[Dashboard] 💾 Saved to DB:', { totalMinutes, deltaMinutes });
   };
 
   // ✅ INITIALIZE SESSION (load from DB and localStorage, use whichever is newer)
   useEffect(() => {
     if (!user.id || !socket) return;
+    if (didInitRef.current) return;
+
+    didInitRef.current = true;
     
     const initSession = async () => {
       const now = Date.now() + serverOffsetMs;
       const today = toISTDateString(new Date(now));
-      
-      console.log('[Dashboard] 🔄 Initializing session...');
-      
+
       // Load from localStorage
       const localStats = loadFromLocalStorage(today);
+
+      const myPresence = Array.isArray(realtimeStatuses)
+        ? realtimeStatuses.find((r) => String(r?.userId) === String(user.id))
+        : undefined;
+      const presenceStatus = myPresence?.status as OfficeStatus | undefined;
+      const presenceLastUpdateMs = myPresence?.lastUpdate
+        ? new Date(myPresence.lastUpdate).getTime()
+        : NaN;
+      const localInitialStatus = localStats?.currentStatus ? normalizeOfficeStatus(localStats.currentStatus) : undefined;
+      const initialStatus: OfficeStatus = localInitialStatus || presenceStatus || OfficeStatus.AVAILABLE;
+      const initialStatusTs = Number.isFinite(presenceLastUpdateMs)
+        ? Math.min(now, presenceLastUpdateMs)
+        : now;
+      
+      console.log('[Dashboard] 🔄 Initializing session...');
       
       // Load from database
       let dbStats: any = null;
       try {
-        const serverIp = 'https://server2-e3p9.onrender.com';
+        const serverIp = getBackendUrl();
         const response = await fetch(`${serverIp}/api/Office/session-state?userId=${user.id}&date=${today}`);
         const data = await response.json();
-        if (data.ok) dbStats = data.sessionState;
+        if (data.ok) dbStats = normalizeDbSessionState(data.sessionState);
       } catch (e) {
         console.error('[Dashboard] DB fetch failed:', e);
       }
+
+      setDbSnapshot(dbStats);
       
-      // Determine which data to use (newest)
-      let useLocal = false;
-      if (localStats && dbStats) {
-        useLocal = localStats.lastSavedAt > new Date(dbStats.lastupdate || 0).getTime();
-      } else if (localStats && !dbStats) {
-        useLocal = true;
-      }
+      // Local-first (for stability): if local cache exists for today, use it immediately.
+      // We'll keep syncing to DB in the background.
+      const useLocal = Boolean(localStats);
       
       console.log('[Dashboard] Data sources:', { 
         local: localStats?.productiveMinutes || 0, 
@@ -219,39 +382,44 @@ const Dashboard: React.FC<DashboardProps> = ({
       
       if (useLocal && localStats) {
         // Use localStorage data
-        const [hh, mm, ss] = localStats.loginTime.split(':').map(Number);
-        const loginDate = new Date();
-        loginDate.setHours(hh, mm, ss);
-        
-        setSessionStartTime(loginDate.getTime());
-        setCurrentStatus(OfficeStatus.AVAILABLE);
-        currentStatusRef.current = OfficeStatus.AVAILABLE;
-        statusChangeTimeRef.current = now;
+        const loginMs = parseISTLoginMs(today, localStats.loginTime);
+        setSessionStartTime(loginMs ?? now);
+        setCurrentStatus(initialStatus);
+        currentStatusRef.current = initialStatus;
+        const localStatusChangeMs = (typeof localStats.statusChangeMs === 'number' && Number.isFinite(localStats.statusChangeMs))
+          ? Math.min(now, localStats.statusChangeMs)
+          : NaN;
+        statusChangeTimeRef.current = Number.isFinite(localStatusChangeMs) ? localStatusChangeMs : initialStatusTs;
         
         console.log('[Dashboard] ✅ Restored from localStorage:', localStats.productiveMinutes, 'mins');
         
-      } else if (dbStats && dbStats.loginTime && dbStats.loginTime !== '00:00:00') {
-        // Use database data
-        const [hh, mm, ss] = dbStats.loginTime.split(':').map(Number);
-        const loginDate = new Date();
-        loginDate.setHours(hh, mm, ss);
-        
-        setSessionStartTime(loginDate.getTime());
-        setCurrentStatus(OfficeStatus.AVAILABLE);
-        currentStatusRef.current = OfficeStatus.AVAILABLE;
-        statusChangeTimeRef.current = now;
+      } else if (dbStats) {
+        // Use database data (DB is source of truth). Some DBs may store blank/00:00:00 loginTime.
+        const safeLoginTime = (dbStats.loginTime && dbStats.loginTime !== '00:00:00')
+          ? dbStats.loginTime
+          : toISTTimeString(new Date(now));
+
+        const loginMs = parseISTLoginMs(today, safeLoginTime);
+        setSessionStartTime(loginMs ?? now);
+        setCurrentStatus(initialStatus);
+        currentStatusRef.current = initialStatus;
+        statusChangeTimeRef.current = initialStatusTs;
         
         // Save to localStorage
+        const dbLastUpdateMs = dbStats.lastupdate ? new Date(dbStats.lastupdate).getTime() : NaN;
+        const seededLastSavedAt = Number.isFinite(dbLastUpdateMs) ? Math.min(now, dbLastUpdateMs) : now;
         saveToLocalStorage({
           date: today,
-          loginTime: dbStats.loginTime,
+          loginTime: safeLoginTime,
           productiveMinutes: dbStats.productiveMinutes || 0,
           lunchMinutes: dbStats.lunchMinutes || 0,
           snacksMinutes: dbStats.snacksMinutes || 0,
           refreshmentMinutes: dbStats.refreshmentMinutes || 0,
           feedbackMinutes: dbStats.feedbackMinutes || 0,
           crossUtilMinutes: dbStats.crossUtilMinutes || 0,
-          lastSavedAt: now
+          lastSavedAt: seededLastSavedAt,
+          currentStatus: initialStatus,
+          statusChangeMs: initialStatusTs,
         });
         
         console.log('[Dashboard] ✅ Restored from database:', dbStats.productiveMinutes, 'mins');
@@ -261,9 +429,9 @@ const Dashboard: React.FC<DashboardProps> = ({
         const loginTime = toISTTimeString(new Date(now));
         
         setSessionStartTime(now);
-        setCurrentStatus(OfficeStatus.AVAILABLE);
-        currentStatusRef.current = OfficeStatus.AVAILABLE;
-        statusChangeTimeRef.current = now;
+        setCurrentStatus(initialStatus);
+        currentStatusRef.current = initialStatus;
+        statusChangeTimeRef.current = initialStatusTs;
         
         saveToLocalStorage({
           date: today,
@@ -274,13 +442,15 @@ const Dashboard: React.FC<DashboardProps> = ({
           refreshmentMinutes: 0,
           feedbackMinutes: 0,
           crossUtilMinutes: 0,
-          lastSavedAt: now
+          lastSavedAt: now,
+          currentStatus: initialStatus,
+          statusChangeMs: initialStatusTs,
         });
         
         socket.emit('status_change', {
           userId: user.id,
           userName: user.name,
-          status: OfficeStatus.AVAILABLE,
+          status: initialStatus,
           role: user.role,
           activity: 1,
         });
@@ -293,7 +463,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     };
     
     initSession();
-  }, [user.id, socket]);
+  }, [user.id, socket, serverOffsetMs]);
 
   // ✅ PERIODIC SAVE (every 30 seconds)
   useEffect(() => {
@@ -320,8 +490,8 @@ const Dashboard: React.FC<DashboardProps> = ({
 
     const updateTimer = () => {
       const now = Date.now() + serverOffsetMs;
-      setElapsedTime(now - sessionStartTime);
-      setStatusDuration(now - statusChangeTimeRef.current);
+      setElapsedTime(Math.max(0, now - sessionStartTime));
+      setStatusDuration(Math.max(0, now - statusChangeTimeRef.current));
     };
 
     updateTimer();
@@ -336,69 +506,129 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   // ✅ UPDATE STATS DISPLAY
   useEffect(() => {
-    if (!sessionStartTime) return;
-
     const updateStats = () => {
+      if (!sessionStartTime) return;
+
       const now = Date.now() + serverOffsetMs;
       const today = toISTDateString(new Date(now));
       const localStats = loadFromLocalStorage(today);
-      const currentSessionMinutes = getCurrentSessionMinutes(now);
-      
-      let stats = {
-        productiveMinutes: localStats?.productiveMinutes || 0,
-        lunchMinutes: localStats?.lunchMinutes || 0,
-        snacksMinutes: localStats?.snacksMinutes || 0,
-        refreshmentMinutes: localStats?.refreshmentMinutes || 0,
-        feedbackMinutes: localStats?.feedbackMinutes || 0,
-        crossUtilMinutes: localStats?.crossUtilMinutes || 0,
-        totalMinutes: 0,
-        idleMinutes: 0,
-      };
+      const dbBase = normalizeDbSessionState(dbSnapshot);
 
-      // Add current session time
-      switch (currentStatus) {
-        case OfficeStatus.AVAILABLE:
-          stats.productiveMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.LUNCH:
-          stats.lunchMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.SNACKS:
-          stats.snacksMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.REFRESHMENT_BREAK:
-          stats.refreshmentMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.QUALITY_FEEDBACK:
-          stats.feedbackMinutes += currentSessionMinutes;
-          break;
-        case OfficeStatus.CROSS_UTILIZATION:
-          stats.crossUtilMinutes += currentSessionMinutes;
-          break;
+      const baseStats = localStats || (dbBase ? {
+        date: today,
+        loginTime: dbBase.loginTime || toISTTimeString(new Date(sessionStartTime)),
+        productiveMinutes: dbBase.productiveMinutes || 0,
+        lunchMinutes: dbBase.lunchMinutes || 0,
+        snacksMinutes: dbBase.snacksMinutes || 0,
+        refreshmentMinutes: dbBase.refreshmentMinutes || 0,
+        feedbackMinutes: dbBase.feedbackMinutes || 0,
+        crossUtilMinutes: dbBase.crossUtilMinutes || 0,
+        lastSavedAt: (() => {
+          const ms = dbBase.lastupdate ? new Date(dbBase.lastupdate).getTime() : NaN;
+          return Number.isFinite(ms) ? Math.min(now, ms) : sessionStartTime;
+        })(),
+      } as SessionStats : null);
+
+      let idleMinutes = 0;
+      try {
+        const raw = localStorage.getItem(IDLE_TRACK_KEY);
+        const store = raw ? JSON.parse(raw) : null;
+        const dayBucket = store && typeof store === 'object' ? (store as any)[today] : null;
+        const userBucket = dayBucket && typeof dayBucket === 'object' ? (dayBucket as any)[user.id] : null;
+        const idleTotalMs = (userBucket && typeof userBucket.idleTotalMs === 'number' && Number.isFinite(userBucket.idleTotalMs))
+          ? userBucket.idleTotalMs
+          : 0;
+        const idleStartMs = (userBucket && typeof userBucket.idleStartMs === 'number' && Number.isFinite(userBucket.idleStartMs))
+          ? userBucket.idleStartMs
+          : null;
+        const runningMs = (typeof idleStartMs === 'number') ? Math.max(0, now - idleStartMs) : 0;
+        idleMinutes = Math.max(0, Math.floor((idleTotalMs + runningMs) / 60000));
+      } catch (e) {}
+
+      // Fallback: if idle store isn't present/populated, derive current idle time from realtime status.
+      if (idleMinutes <= 0) {
+        const myStatus = Array.isArray(realtimeStatuses)
+          ? realtimeStatuses.find((r) => String(r?.userId) === String(user.id))
+          : undefined;
+        const rawActivity = typeof myStatus?.activity === 'number' ? myStatus.activity : 2;
+        const lastAt = typeof myStatus?.activityUpdatedAt === 'number'
+          ? myStatus.activityUpdatedAt
+          : (typeof myStatus?.lastActivityAt === 'number' ? myStatus.lastActivityAt : undefined);
+
+        if (rawActivity === 0 && typeof lastAt === 'number' && Number.isFinite(lastAt) && now >= lastAt) {
+          idleMinutes = Math.max(0, Math.floor((now - lastAt) / 60000));
+        }
       }
 
-      stats.totalMinutes = stats.productiveMinutes + stats.lunchMinutes + stats.snacksMinutes +
-        stats.refreshmentMinutes + stats.feedbackMinutes + stats.crossUtilMinutes;
+      const stats = {
+        productiveMinutes: baseStats?.productiveMinutes || 0,
+        lunchMinutes: baseStats?.lunchMinutes || 0,
+        snacksMinutes: baseStats?.snacksMinutes || 0,
+        refreshmentMinutes: baseStats?.refreshmentMinutes || 0,
+        feedbackMinutes: baseStats?.feedbackMinutes || 0,
+        crossUtilMinutes: baseStats?.crossUtilMinutes || 0,
+        totalMinutes: 0,
+        idleMinutes,
+      };
+
+      // If this tab is force-logged-out, the server disconnects the socket.
+      // In that case we must NOT keep accumulating minutes locally.
+      const canAccumulate = Boolean(socket && socket.connected);
+      const deltaMinutes = canAccumulate && baseStats?.lastSavedAt
+        ? Math.max(0, Math.floor((now - baseStats.lastSavedAt) / 60000))
+        : 0;
+
+      if (deltaMinutes > 0) {
+        switch (normalizeOfficeStatus(currentStatusRef.current)) {
+          case OfficeStatus.AVAILABLE:
+            stats.productiveMinutes += deltaMinutes;
+            break;
+          case OfficeStatus.LUNCH:
+            stats.lunchMinutes += deltaMinutes;
+            break;
+          case OfficeStatus.SNACKS:
+            stats.snacksMinutes += deltaMinutes;
+            break;
+          case OfficeStatus.REFRESHMENT_BREAK:
+            stats.refreshmentMinutes += deltaMinutes;
+            break;
+          case OfficeStatus.QUALITY_FEEDBACK:
+            stats.feedbackMinutes += deltaMinutes;
+            break;
+          case OfficeStatus.CROSS_UTILIZATION:
+            stats.crossUtilMinutes += deltaMinutes;
+            break;
+        }
+      }
+
+      stats.totalMinutes =
+        stats.productiveMinutes +
+        stats.lunchMinutes +
+        stats.snacksMinutes +
+        stats.refreshmentMinutes +
+        stats.feedbackMinutes +
+        stats.crossUtilMinutes;
 
       setTodayStats(stats);
     };
 
     updateStats();
     const interval = setInterval(updateStats, 1000);
-    
     return () => clearInterval(interval);
-  }, [sessionStartTime, currentStatus, user.id, serverOffsetMs]);
+  }, [sessionStartTime, user.id, serverOffsetMs, socket]);
 
   // ✅ HANDLE STATUS CHANGE
   const handleStatusChange = (newStatus: OfficeStatus) => {
     if (!socket || !sessionStartTime) return;
-    if (newStatus === currentStatus) return;
-    
+    if (!socket.connected) return;
+
+    const nextStatus = normalizeOfficeStatus(newStatus);
+    if (nextStatus === currentStatusRef.current) return;
+
     isChangingStatusRef.current = true;
-    
+
     const now = Date.now() + serverOffsetMs;
     const today = toISTDateString(new Date(now));
-    const timeInOldStatus = getCurrentSessionMinutes(now);
     const localStats = loadFromLocalStorage(today) || {
       date: today,
       loginTime: toISTTimeString(new Date(sessionStartTime)),
@@ -408,53 +638,62 @@ const Dashboard: React.FC<DashboardProps> = ({
       refreshmentMinutes: 0,
       feedbackMinutes: 0,
       crossUtilMinutes: 0,
-      lastSavedAt: now
+      lastSavedAt: now,
     };
-    
-    // Save time from old status
-    switch (currentStatus) {
-      case OfficeStatus.AVAILABLE:
-        localStats.productiveMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.LUNCH:
-        localStats.lunchMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.SNACKS:
-        localStats.snacksMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.REFRESHMENT_BREAK:
-        localStats.refreshmentMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.QUALITY_FEEDBACK:
-        localStats.feedbackMinutes += timeInOldStatus;
-        break;
-      case OfficeStatus.CROSS_UTILIZATION:
-        localStats.crossUtilMinutes += timeInOldStatus;
-        break;
+
+    const prevSavedAt = localStats.lastSavedAt || now;
+    const deltaMinutes = Math.max(0, Math.floor((now - prevSavedAt) / 60000));
+
+    if (deltaMinutes > 0) {
+      switch (normalizeOfficeStatus(currentStatusRef.current)) {
+        case OfficeStatus.AVAILABLE:
+          localStats.productiveMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.LUNCH:
+          localStats.lunchMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.SNACKS:
+          localStats.snacksMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.REFRESHMENT_BREAK:
+          localStats.refreshmentMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.QUALITY_FEEDBACK:
+          localStats.feedbackMinutes += deltaMinutes;
+          break;
+        case OfficeStatus.CROSS_UTILIZATION:
+          localStats.crossUtilMinutes += deltaMinutes;
+          break;
+      }
     }
-    
+
     localStats.lastSavedAt = now;
     saveToLocalStorage(localStats);
-    
-    setCurrentStatus(newStatus);
-    currentStatusRef.current = newStatus;
+
+    setCurrentStatus(nextStatus);
+    currentStatusRef.current = nextStatus;
     statusChangeTimeRef.current = now;
-    
+
+    // Persist status timer locally immediately so the state timer won't reset on tab switch.
+    saveToLocalStorage({
+      ...localStats,
+      lastSavedAt: now,
+      currentStatus: nextStatus,
+      statusChangeMs: now,
+    });
+
     socket.emit('status_change', {
       userId: user.id,
       userName: user.name,
-      status: newStatus,
+      status: nextStatus,
       role: user.role,
       activity: 1,
     });
-    
-    // Save to DB immediately
+
     setTimeout(() => {
       saveToDatabase();
       isChangingStatusRef.current = false;
     }, 500);
-    
-    console.log('[Dashboard] 🔄 Changed:', currentStatus, '→', newStatus);
   };
 
   const formatTime = (ms: number): string => {
@@ -501,7 +740,17 @@ const Dashboard: React.FC<DashboardProps> = ({
   ];
 
   const myStatus = realtimeStatuses.find(s => s.userId === user.id);
-  const isActive = myStatus?.activity === 1;
+  const allowIdleTracking = currentStatus === OfficeStatus.AVAILABLE;
+  const rawActivity = typeof myStatus?.activity === 'number' ? myStatus.activity : 2;
+  const lastAt = typeof myStatus?.activityUpdatedAt === 'number'
+    ? myStatus.activityUpdatedAt
+    : (typeof myStatus?.lastActivityAt === 'number' ? myStatus.lastActivityAt : undefined);
+  const nowMs = Date.now() + (serverOffsetMs || 0);
+  const hasActivityTs = allowIdleTracking && typeof lastAt === 'number' && Number.isFinite(lastAt);
+  const activity = hasActivityTs ? rawActivity : 2;
+  const isIdle = allowIdleTracking && activity === 0;
+  const isActive = allowIdleTracking && activity === 1;
+  const activityAgeSeconds = (hasActivityTs && typeof lastAt === 'number') ? Math.max(0, Math.floor((nowMs - lastAt) / 1000)) : 0;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-24">
@@ -526,10 +775,12 @@ const Dashboard: React.FC<DashboardProps> = ({
               <h3 className="text-2xl font-semibold text-white mb-1">{currentConfig.label}</h3>
               <p className="text-sm text-white/80 font-medium">{formatTime(statusDuration)}</p>
             </div>
-            {isActive && (
+            {(isActive || isIdle) && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/20 border border-white/30">
                 <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                <span className="text-xs font-semibold text-white">Active</span>
+                <span className="text-xs font-semibold text-white">
+                  {isIdle ? 'Idle' : 'Active'} {formatTime(activityAgeSeconds)}
+                </span>
               </div>
             )}
           </div>
@@ -588,11 +839,34 @@ const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-xl p-6">
-        <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-6">Today's Activity</h2>
+        <div className="flex items-center justify-between gap-4 mb-6">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Today's Activity</h2>
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
+              <span className="font-mono">
+                {sessionStartTime
+                  ? new Date(sessionStartTime).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
+                  : '--:--'}
+              </span>
+              <span className="mx-2">-</span>
+              <span className="font-mono">{formatMinutes(todayStats.productiveMinutes)}</span>
+              <span className="ml-1">productive</span>
+            </div>
+          </div>
+          <button
+            onClick={manualSyncNow}
+            disabled={!socket?.connected || isManualSyncing}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50"
+          >
+            <Timer className="w-4 h-4" />
+            {isManualSyncing ? 'Syncing…' : 'Manual Sync'}
+          </button>
+        </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
           {[
             { label: 'Productive', value: todayStats.productiveMinutes, icon: CheckCircle2, color: 'from-emerald-500 to-teal-600' },
+            { label: 'Idle', value: todayStats.idleMinutes, icon: Activity, color: 'from-slate-600 to-slate-800' },
             { label: 'Lunch', value: todayStats.lunchMinutes, icon: Coffee, color: 'from-orange-500 to-amber-600' },
             { label: 'Snacks', value: todayStats.snacksMinutes, icon: Cookie, color: 'from-yellow-500 to-orange-500' },
             { label: 'Break', value: todayStats.refreshmentMinutes, icon: Sparkles, color: 'from-blue-500 to-cyan-600' },
@@ -612,6 +886,25 @@ const Dashboard: React.FC<DashboardProps> = ({
             </div>
           ))}
         </div>
+
+        {dbSnapshot && (
+          <div className="mt-6 p-4 rounded-2xl bg-slate-50/60 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-700/50">
+            <div className="flex items-center justify-between gap-4 mb-3">
+              <div className="text-sm font-semibold text-slate-900 dark:text-white">DB (Last Saved)</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                {dbSnapshot.lastupdate ? String(dbSnapshot.lastupdate) : ''}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div className="text-xs text-slate-600 dark:text-slate-400">Prod: <span className="font-mono text-slate-900 dark:text-white">{formatMinutes(dbSnapshot.productiveMinutes || 0)}</span></div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">Lunch: <span className="font-mono text-slate-900 dark:text-white">{formatMinutes(dbSnapshot.lunchMinutes || 0)}</span></div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">Snacks: <span className="font-mono text-slate-900 dark:text-white">{formatMinutes(dbSnapshot.snacksMinutes || 0)}</span></div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">Break: <span className="font-mono text-slate-900 dark:text-white">{formatMinutes(dbSnapshot.refreshmentMinutes || 0)}</span></div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">Feedback: <span className="font-mono text-slate-900 dark:text-white">{formatMinutes(dbSnapshot.feedbackMinutes || 0)}</span></div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">Cross: <span className="font-mono text-slate-900 dark:text-white">{formatMinutes(dbSnapshot.crossUtilMinutes || 0)}</span></div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
